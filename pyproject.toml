@@ -19,7 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 serve = ["starlette>=0.37", "uvicorn>=0.29"]
-distill = ["httpx>=0.27"]   # optional: label rows from an OpenAI-compatible big model
+train4b = ["peft>=0.11"]                       # LoRA for the Qwen3.5-4B leaderboard variant
+data = ["datasets>=2.19", "huggingface_hub>=0.23"]   # pull public decision datasets
+distill = ["httpx>=0.27"]                      # optional: label rows from an OpenAI-compatible model
 
 [project.scripts]
 haruspex-train = "haruspex.train:main"

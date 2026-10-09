@@ -34,9 +34,12 @@ def _load(path: str):
 
 
 def _question_to_row(state, q: dict) -> dict:
-    """Map one Jev question into a Haruspex decision row."""
+    """Map one question (Jev or TypeSafe shape) into a Haruspex decision row.
+    TypeSafe calls boolean 'noul'."""
     qt = (q.get("type") or "boolean").lower()
     crit = q.get("criteria")
+    if qt == "noul":
+        qt = "boolean"
     row = {"type": qt, "state": state, "question": q.get("instructions", "")}
     if qt == "choice":
         row["candidates"] = crit if isinstance(crit, dict) else {}
@@ -55,8 +58,15 @@ def build_app(model_path: str):
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
+    served_name = os.environ.get("HARUSPEX_SERVED_NAME", "haruspex")
+
     async def health(request):
         return JSONResponse({"ok": _MODEL is not None, "model": model_path})
+
+    async def models(request):
+        # OpenAI-style model list — the JevBench adapter / TypeSafe clients probe this.
+        return JSONResponse({"object": "list",
+                             "data": [{"id": served_name, "object": "model"}]})
 
     async def evaluate(request):
         m = _load(model_path)
@@ -68,12 +78,18 @@ def build_app(model_path: str):
                 answers[name] = m.decide(_question_to_row(state, q))
             except ValueError as e:
                 answers[name] = {"error": str(e)}
-        return JSONResponse({"model": body.get("model") or "haruspex", "answers": answers})
+        return JSONResponse({"model": body.get("model") or served_name, "answers": answers})
 
     _load(model_path)   # warm the model before serving (version-proof: no lifespan hook)
     return Starlette(
-        routes=[Route("/health", health, methods=["GET"]),
-                Route("/v1/evaluate", evaluate, methods=["POST"])],
+        routes=[
+            Route("/health", health, methods=["GET"]),
+            Route("/v1/models", models, methods=["GET"]),
+            # /v1/evaluate = native Jev (Praetor/assay); /v1/systemone = TypeSafe shape
+            # (JevBench's open-weights adapter). Same request/response contract.
+            Route("/v1/evaluate", evaluate, methods=["POST"]),
+            Route("/v1/systemone", evaluate, methods=["POST"]),
+        ],
     )
 
 
