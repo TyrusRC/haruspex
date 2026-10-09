@@ -44,6 +44,8 @@ class HaruspexModel(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(self.backbone_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        # right-pad so decoder last-real-token pooling (attention_mask.sum-1) is correct
+        self.tokenizer.padding_side = "right"
         hidden = base.config.hidden_size
         if self.use_lora:
             base = _wrap_lora(base)
@@ -67,6 +69,8 @@ class HaruspexModel(nn.Module):
     def forward(self, input_ids, attention_mask) -> torch.Tensor:
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         pooled = self._pool(out.last_hidden_state, attention_mask)
+        # backbone may be bf16/fp16 (decoders default to it); the head is fp32
+        pooled = pooled.to(self.scorer.weight.dtype)
         return self.scorer(pooled).squeeze(-1)
 
     def _device(self) -> torch.device:
