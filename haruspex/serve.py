@@ -48,36 +48,33 @@ def _question_to_row(state, q: dict) -> dict:
 
 
 def build_app(model_path: str):
-    from fastapi import FastAPI
-    from pydantic import BaseModel
+    # Built on Starlette directly (FastAPI's base): route handlers receive the
+    # request positionally, so there is no body/query parameter heuristic to
+    # trip over across versions. `state` may be a string OR a JSON object.
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
 
-    class Req(BaseModel):
-        model: str | None = None
-        state: object = ""
-        questions: dict = {}
+    async def health(request):
+        return JSONResponse({"ok": _MODEL is not None, "model": model_path})
 
-    app = FastAPI(title="haruspex")
-
-    @app.on_event("startup")
-    def _startup():
-        _load(model_path)
-
-    @app.get("/health")
-    def health():
-        return {"ok": _MODEL is not None, "model": model_path}
-
-    @app.post("/v1/evaluate")
-    def evaluate(req: Req):
+    async def evaluate(request):
         m = _load(model_path)
+        body = await request.json()
+        state = body.get("state", "")
         answers = {}
-        for name, q in (req.questions or {}).items():
+        for name, q in (body.get("questions") or {}).items():
             try:
-                answers[name] = m.decide(_question_to_row(req.state, q))
+                answers[name] = m.decide(_question_to_row(state, q))
             except ValueError as e:
                 answers[name] = {"error": str(e)}
-        return {"model": req.model or "haruspex", "answers": answers}
+        return JSONResponse({"model": body.get("model") or "haruspex", "answers": answers})
 
-    return app
+    _load(model_path)   # warm the model before serving (version-proof: no lifespan hook)
+    return Starlette(
+        routes=[Route("/health", health, methods=["GET"]),
+                Route("/v1/evaluate", evaluate, methods=["POST"])],
+    )
 
 
 # `uvicorn haruspex.serve:app` entry (reads HARUSPEX_MODEL).
