@@ -1,0 +1,34 @@
+[project]
+name = "haruspex"
+version = "0.1.0"
+description = "A small open-weight decision model — reads the signs, returns calibrated verdicts. Per-candidate scoring on a ModernBERT encoder; typed Choice/Noul/Score with calibrated probabilities."
+license = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Tyrus"}]
+keywords = ["decision-model", "calibration", "jev", "security", "classification", "reranking"]
+
+dependencies = [
+    # ModernBERT needs a recent transformers; torch provides CPU/CUDA/MPS.
+    "torch>=2.3",
+    "transformers>=4.48",
+    "safetensors>=0.4",
+    "numpy>=1.26",
+    "scikit-learn>=1.4",   # isotonic calibration (train-time)
+]
+
+[project.optional-dependencies]
+serve = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2"]
+distill = ["httpx>=0.27"]   # optional: label rows from an OpenAI-compatible big model
+
+[project.scripts]
+haruspex-train = "haruspex.train:main"
+haruspex-eval = "haruspex.eval:main"
+haruspex-serve = "haruspex.serve:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["haruspex"]

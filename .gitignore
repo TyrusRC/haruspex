@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Model artifacts / data (keep the repo weights-free; publish weights on HF)
+runs/
+checkpoints/
+*.pt
+*.safetensors
+data/*.jsonl
+!data/seed.jsonl
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
