@@ -104,11 +104,46 @@ POST /v1/evaluate  (or /v1/systemone)
                              "criteria": {true,false} | {opt:desc} | [low,high] } } }
 ```
 
+## Security operations (offensive + defensive)
+
+Haruspex is optimized for the decisions a security operator or agent makes on repeat:
+
+- **Offensive (pentest / red-team):** template/probe relevance to a target, "is this
+  scanner hit a real finding?", finding severity, verdict discipline
+  (vulnerable / not-vulnerable / **inconclusive**), attack-path next step.
+- **Defensive (SOC / blue-team):** alert triage (true vs false positive), alert
+  severity/priority, detection-rule applicability to a log source, incident routing,
+  CVE applicability + remediation urgency.
+
+`data/security_seed.jsonl` carries labeled examples of all of these (both sides).
+Train on **security_seed + general decision data** so the model keeps broad
+competence while specializing where it is used.
+
+```sh
+python scripts/convert_mmdm.py --out-dir data        # general decision data
+cat data/security_seed.jsonl >> data/train.jsonl     # add the security specialization
+HARUSPEX_PROFILE=4b python -m haruspex.train --train data/train.jsonl --val data/val.jsonl --out runs/haruspex-4b
+```
+
 ## Data
 
 JSONL decision rows — see [`data/schema.md`](data/schema.md). `data/seed.jsonl`
-is a tiny security-domain starter. Bootstrap labels from a heuristic, real
-pentest outcomes, or one-shot distillation from a big model.
+(tiny starter) and `data/security_seed.jsonl` (offensive + defensive). Bootstrap
+labels from a heuristic, real pentest/SOC outcomes, or one-shot distillation from a
+big model (`scripts/convert_mmdm.py` pulls general decision data from the HF Hub).
+
+## Publish to Hugging Face
+
+The trained folder is a standard HF model dir (backbone weights + tokenizer) plus
+the decision head (`head.pt`, `meta.json`). Publish it with a generated model card:
+
+```sh
+pip install -e ".[data]" && huggingface-cli login   # or export HF_TOKEN=...
+python scripts/publish_hf.py --model runs/haruspex-4b --repo TyrusRC/haruspex
+```
+Load it back standalone with `HaruspexModel.load("TyrusRC/haruspex")` or serve it
+(`haruspex-serve`). Loading needs the `haruspex` package (the custom head is beside
+the backbone) — a plain `AutoModel` load gives only the encoder.
 
 ## Status
 

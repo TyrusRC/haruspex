@@ -34,5 +34,22 @@ class QuestionMappingTest(unittest.TestCase):
         self.assertEqual(r["state"], {"a": 1})
 
 
+class CardTest(unittest.TestCase):
+    def test_card_fills_from_meta(self):
+        import json
+        import os
+        import tempfile
+
+        from haruspex.card import build_card
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "meta.json"), "w") as fh:
+            json.dump({"backbone": "Qwen/Qwen3.5-4B", "type": "decoder"}, fh)
+        card = build_card(d, "TyrusRC/haruspex")
+        self.assertIn("TyrusRC/haruspex", card)
+        self.assertIn("Qwen/Qwen3.5-4B", card)
+        self.assertIn("/v1/systemone", card)
+        self.assertIn("apache-2.0", card)
+
+
 if __name__ == "__main__":
     unittest.main()

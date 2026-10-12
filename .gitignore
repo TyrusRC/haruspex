@@ -13,6 +13,7 @@ checkpoints/
 *.safetensors
 data/*.jsonl
 !data/seed.jsonl
+!data/security_seed.jsonl
 
 # OS / editor
 .DS_Store
