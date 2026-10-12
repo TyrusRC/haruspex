@@ -65,6 +65,8 @@ def gold_label(row: dict):
     if t == "boolean":
         return "yes" if (tgt is True or (isinstance(tgt, (int, float)) and tgt >= 0.5)) else "no"
     if t == "choice":
+        if isinstance(tgt, dict):                 # soft distribution -> argmax label
+            return max(tgt, key=tgt.get) if tgt else None
         return str(tgt)
     if t == "score":
         levels = [str(x) for x in (row.get("levels") or [])]

@@ -20,18 +20,22 @@ from .data import load_rows, to_input_example
 
 
 def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
-          batch_size=4, grad_accum=1, lora_r=16, lora_alpha=32, logging_steps=5):
+          batch_size=4, grad_accum=1, lora_r=16, lora_alpha=32, logging_steps=5,
+          grad_checkpoint=None, max_len=None):
     import torch
     from gliner2 import GLiNER2
     from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
 
     examples = [to_input_example(r) for r in rows]
     cuda = torch.cuda.is_available()
+    # Full fine-tune always checkpoints; LoRA checkpoints on request (long,
+    # many-option states — real decision data — can OOM a modest GPU otherwise).
+    ckpt = (mode == "full") if grad_checkpoint is None else grad_checkpoint
     cfg = TrainingConfig(
         output_dir=out, num_epochs=epochs, max_steps=max_steps,
         batch_size=batch_size, gradient_accumulation_steps=grad_accum,
         use_lora=(mode == "lora"), lora_r=lora_r, lora_alpha=lora_alpha,
-        gradient_checkpointing=(mode == "full"),
+        gradient_checkpointing=ckpt, max_len=max_len,
         bf16=cuda, fp16=False, eval_strategy="no", save_best=False,
         save_total_limit=1, num_workers=0, pin_memory=False,
         validate_data=False, logging_steps=logging_steps, warmup_ratio=0.1,
@@ -64,6 +68,9 @@ def main():
     ap.add_argument("--max-steps", type=int, default=-1)
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--grad-accum", type=int, default=1)
+    ap.add_argument("--grad-checkpoint", action="store_true",
+                    help="trade compute for memory (needed for long many-option states)")
+    ap.add_argument("--max-len", type=int, default=0, help="cap sequence length (0 = model default)")
     args = ap.parse_args()
 
     from .config import resolve_model
@@ -71,7 +78,8 @@ def main():
     rows = load_rows(args.train)
     print(f"[train] base={base} rows={len(rows)} mode={args.mode}")
     out = train(base, rows, args.out, mode=args.mode, epochs=args.epochs,
-                max_steps=args.max_steps, batch_size=args.batch, grad_accum=args.grad_accum)
+                max_steps=args.max_steps, batch_size=args.batch, grad_accum=args.grad_accum,
+                grad_checkpoint=args.grad_checkpoint or None, max_len=args.max_len or None)
     print(f"[train] saved standalone model -> {out}")
     print("[train] fit a calibrator next: python -m haruspex.calibrate "
           f"--model {out} --data <val.jsonl>")

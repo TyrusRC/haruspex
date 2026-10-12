@@ -35,15 +35,35 @@ The contribution is the layer around the reused model:
 The artifact you ship is a **30 MB LoRA adapter + a calibrator**, reattached to the
 reused base at load time — not a 2 GB copy.
 
-## Measured (RTX 3060, 12 GB)
+## Measured (RTX 3060, 12 GB, WSL2)
 
-- **Base model, no training** (34 security decisions): boolean 0.62 · choice 0.55 ·
-  score 0.20 · overall **0.47**. Inference ~2.0 GB VRAM, 28 ms median/decision.
-- **LoRA fine-tune fits easily**: peak **3.8 GB**; full fine-tune **8.3 GB**. No bigger
-  GPU needed.
-- Specialization learns: after a short LoRA run, in-sample accuracy rises to ~0.79.
-  (In-sample only — it shows the layer trains; held-out generalization needs a real
-  train/eval split, see below.)
+**Inference.** Base GLiNER2.5-Decide, no training, on 34 security decisions:
+boolean 0.62 · choice 0.55 · score 0.20 · overall **0.47**. ~2.0 GB VRAM,
+28 ms median/decision.
+
+**Held-out gain** (real train≠eval; a *partial* 250-step LoRA on ~2k public mmdm
+decision rows, 240 held out):
+
+| | accuracy | Brier | ECE |
+|---|---|---|---|
+| base (untrained) | 0.358 | 0.274 | 0.131 |
+| + LoRA (partial) | **0.433** | 0.211 | **0.057** |
+
+Modest but real: specialization generalizes and roughly halves calibration error. The
+selective layer at target risk 0.1 then accepts only the most-confident ~2.5 % with
+**zero accepted errors** — correct for a weak partial model; higher coverage needs a
+fuller train.
+
+**Training cost — the base is DeBERTa-v3-large, whose disentangled attention is
+memory-heavy** (take note before you scale up):
+
+- Short rows (the security pack): LoRA peaks ~3.8 GB — comfortable.
+- Real-scale rows (long, many-option states): **batch 4 OOMs a 12 GB card** — a single
+  many-option row can need ~6 GB. The 3060 trains them only after dropping rows with
+  > 8 options or > 700 chars and using **batch 2 + grad-accum + gradient checkpointing +
+  `max_len` 192** → peak 2.7 GB, ~1.4 s/step.
+- A comfortable full-scale run (all rows, full length, several epochs) wants a **24 GB
+  GPU**, or the slow checkpointed path (~2 h / 2 epochs) on the 3060.
 
 ## Install
 
@@ -68,6 +88,9 @@ Specialize, calibrate, evaluate, serve:
 
 ```sh
 python -m haruspex.train     --train data/security_seed.jsonl --out runs/sec
+# real-scale / long rows on a 12 GB GPU: add memory flags
+# python -m haruspex.train   --train data/train.jsonl --out runs/sec \
+#     --batch 2 --grad-accum 4 --grad-checkpoint --max-len 192
 python -m haruspex.calibrate --model runs/sec --data data/val.jsonl --target-risk 0.1
 python -m haruspex.eval      --model runs/sec --data data/val.jsonl   # Accuracy/ECE/Brier/latency + coverage/risk
 python -m haruspex.serve     --model runs/sec --port 3000             # POST /v1/systemone · /v1/evaluate
@@ -124,9 +147,12 @@ Load it back with `Haruspex.load("<you>/haruspex", device="cuda")`.
 
 ## Status
 
-Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end and trains on
-a modest GPU with LoRA. Full-mode reload waits on a gliner2 save fix; prediction *sets*
-(beyond abstention) wait on a gliner2 per-label-score fix. Contributions and independent
+Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end, and a real
+train→held-out-eval cycle on a 12 GB RTX 3060 shows a genuine (if partial) gain — see
+[Measured](#measured-rtx-3060-12-gb-wsl2). Known limits, all noted there or in code:
+a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
+memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* (beyond
+abstention) wait on a gliner2 per-label-score fix. Contributions and independent
 evaluations welcome — run `python -m unittest discover tests` before a PR.
 
 ## License

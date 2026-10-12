@@ -48,6 +48,10 @@ class GoldLabelTest(unittest.TestCase):
         self.assertEqual(gold_label({"type": "choice", "candidates": {"a": "", "b": ""},
                                      "target": "b"}), "b")
 
+    def test_choice_soft_dict_argmax(self):
+        self.assertEqual(gold_label({"type": "choice", "candidates": {"a": "", "b": ""},
+                                     "target": {"a": 0.2, "b": 0.8}}), "b")
+
     def test_score_index(self):
         self.assertEqual(gold_label({"type": "score", "levels": ["lo", "mid", "hi"],
                                      "target": 2}), "hi")
