@@ -1,45 +1,56 @@
 # Haruspex
 
-> A small, open-weight **decision model** — reads the signs, returns calibrated verdicts.
+> Train and run a small, local **decision model** for your own decisions — calibrated
+> typed verdicts, not text.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Haruspex is an open-source, open-weight **decision model**. Given a situation and a
-bounded set of options, it returns a *typed* answer with a **calibrated probability**,
-not free text:
+Haruspex is an open-source toolkit for a small decision model you **train on your own
+decisions and run locally**. Given a situation and bounded options it returns a typed,
+**calibrated** answer, not free text:
 
 - **boolean** — yes/no + `P(yes)`
 - **choice** — pick one option (+ a probability per option)
 - **score** — rate on an ordered rubric (+ an expected level)
 
-It is a **general** decision model — usable for any decision task — runs on **CPU,
-CUDA, or Apple-MPS**, serves the Jev / TypeSafe HTTP contract, and has **no dependency
-on any other project**. It is inspired by TypeSafe's Jev and the open OpenJev
-reproductions.
+It trains on a modest GPU (or CPU), runs on **CPU / CUDA / Apple-MPS**, serves the Jev
+/ TypeSafe HTTP contract, and has **no vendor and no dependency on any other project**.
 
-## What it's for
+## When to use this (and when not)
 
-Decision models are a fit for classification, routing, rubric scoring, and
-verification — anywhere you want a calibrated typed answer instead of a paragraph.
-Examples: triage/route a support ticket, grade an answer against a rubric, judge a
-model output, gate an agent step. This repo also ships an **example domain pack for
-security operations** (see [Security pack](#example-domain-pack-security-operations)),
-but nothing in the model is security-specific — point it at your own decision data.
+Use Haruspex when you want to **own and specialize** a small decision model for a real
+workflow — triage, routing, rubric scoring, verifying/gating an agent step, security-ops
+decisions — and run it locally/offline. You train it on your data; the model is yours,
+small, and specialized to the job.
+
+It is **not** a pretrained, benchmark-tuned checkpoint, and it is not trying to win a
+leaderboard. If you just want a ready-made *general* decision model, use an existing one
+(TypeSafe **Jev**, or the open **OpenJev / Von / Kev / NanoJev**). Haruspex deliberately
+uses the **same standard recipe** as those — its point is a small model that works for
+*your* task on *your* hardware, specialized by *your* data, not a new architecture.
+
+This repo ships an **example domain pack for security operations** (see
+[Security pack](#example-domain-pack-security-operations)) as one worked specialization;
+nothing in the model is security-specific — point it at your own decisions.
 
 ## Architecture
 
 ```
-[STATE] [QUESTION] [CANDIDATE]  ->  backbone  ->  pooled vector
-                                ->  shared Linear(h, 1) head  ->  one scalar per candidate
+[STATE] [QUESTION] [CANDIDATE]  ->  backbone  ->  pooled vector per candidate
+                                ->  OptionInteractor head (self-attention over the
+                                    candidates + scalar readout)  ->  one score each
                                 ->  temperature-scale  ->  normalize per question
 ```
 - choice → `softmax(scores / T)`
 - boolean → `sigmoid(score / T)` (+ optional **isotonic** recalibration)
 - score → `softmax(level scores / T)`, value `= Σ i · pᵢ`
 
-The 1-D head means the candidate count is free at runtime — no fixed classifier.
-Calibration is **post-hoc** and uses no test labels: NLL+Brier training → temperature
-on a held-out split → isotonic. Evaluation reports Accuracy, Brier, and **ECE**.
+The candidate count is free at runtime — no fixed classifier. Calibration is **post-hoc**
+and uses no test labels: NLL+Brier training → temperature on a held-out split → isotonic.
+Evaluation reports Accuracy, Brier, and **ECE**.
+
+This recipe is standard for small decision models (see Acknowledgements); Haruspex claims
+no architectural novelty — the value is the local, train-your-own workflow below.
 
 **Small and local by default.** The backbone is a ModernBERT encoder (~150M) —
 non-autoregressive, single-forward, CPU/edge-friendly. It is backbone-agnostic:
@@ -156,9 +167,9 @@ and memory), which is where a small model is meant to win.
 
 ## Status
 
-Early. The pipeline (train → calibrate → eval → serve) is runnable and validated
-end-to-end; shipped checkpoints are **not** published yet. Contributions and
-independent evaluations are welcome.
+Early. The toolkit (train → calibrate → eval → serve) runs end-to-end and trains on a
+modest GPU in head mode. By design **no pretrained general checkpoint is shipped** —
+you train your own on your data. Contributions and independent evaluations welcome.
 
 ## Contributing
 
@@ -172,5 +183,8 @@ metric and the setup). Run `python -m unittest discover tests` before a PR.
 
 ## Acknowledgements
 
-Inspired by TypeSafe's **Jev** (the "System One" decision-model idea) and the open
-**OpenJev** reproductions, whose per-candidate scoring recipe Haruspex follows.
+The idea and the recipe come from this line of work, not from Haruspex: TypeSafe's
+**Jev** (the "System One" decision-model idea) and the open reproductions —
+**OpenJev**, **Von**, **Kev**, **NanoJev**, **Laya**, **SemIf** — whose per-candidate
+scoring and set-interaction Haruspex follows. Haruspex's only aim is to make training
+and running a small, specialized one **local and easy**; the architecture is theirs.
