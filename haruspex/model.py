@@ -66,15 +66,29 @@ class HaruspexModel(nn.Module):
         mask = attention_mask.unsqueeze(-1).to(hs.dtype)    # encoder: mean-pool
         return (hs * mask).sum(1) / mask.sum(1).clamp(min=1e-6)
 
-    def forward(self, input_ids, attention_mask) -> torch.Tensor:
+    def _embed(self, input_ids, attention_mask) -> torch.Tensor:
+        """Pooled representation per input (the vector the head scores)."""
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         pooled = self._pool(out.last_hidden_state, attention_mask)
         # backbone may be bf16/fp16 (decoders default to it); the head is fp32
-        pooled = pooled.to(self.scorer.weight.dtype)
-        return self.scorer(pooled).squeeze(-1)
+        return pooled.to(self.scorer.weight.dtype)
+
+    def forward(self, input_ids, attention_mask) -> torch.Tensor:
+        return self.scorer(self._embed(input_ids, attention_mask)).squeeze(-1)
 
     def _device(self) -> torch.device:
         return next(self.parameters()).device
+
+    def embed_texts(self, texts: list[str], batch_size: int = 16) -> torch.Tensor:
+        """Backbone features per text (pre-head). Caller wraps in no_grad to CACHE
+        them once for frozen-backbone (head-only) training."""
+        dev = self._device()
+        outs: list[torch.Tensor] = []
+        for i in range(0, len(texts), batch_size):
+            enc = self.tokenizer(texts[i:i + batch_size], truncation=True, max_length=MAX_LEN,
+                                 padding=True, return_tensors="pt").to(dev)
+            outs.append(self._embed(enc["input_ids"], enc["attention_mask"]))
+        return torch.cat(outs) if outs else torch.empty(0, device=dev)
 
     def score_texts(self, texts: list[str], batch_size: int = 16) -> torch.Tensor:
         dev = self._device()

@@ -4,8 +4,9 @@
 
 Haruspex answers *typed* decisions about a situation — **boolean** (yes/no with a
 probability), **choice** (pick one option), **score** (rate on a rubric) — and
-returns **calibrated probabilities**, not free text. It is built to run on a
-laptop or MacBook from 8 GB RAM, on **CPU, CUDA, or Apple-MPS**.
+returns **calibrated probabilities**, not free text. It runs on **CPU, CUDA, or
+Apple-MPS**. It is a general decision model — usable for any decision task, with no
+dependency on any other project — and ships a security data pack (offensive + defensive).
 
 ## Why it exists
 
@@ -60,8 +61,8 @@ Pick with `HARUSPEX_PROFILE`:
 
 | Profile | Backbone | For |
 |---|---|---|
-| `edge` (default) | ModernBERT-base (~150M, encoder) | runs anywhere (CPU/MPS/8 GB); the keyless local engine for Praetor/assay |
-| `4b` | Qwen3.5-4B + LoRA (decoder) | the **JevBench leaderboard** contender (the eligible small class) |
+| `edge` (default) | ModernBERT-base (~150M, encoder) | CPU / CUDA / Apple-MPS; a keyless self-hosted engine |
+| `4b` | Qwen3.5-4B + LoRA (decoder) | the larger, **JevBench**-oriented variant |
 
 Both share the `Linear(h,1)` candidate scorer + temperature/isotonic calibration.
 The `4b` variant trains with LoRA and **merges it into the base on save**, so the
@@ -82,15 +83,16 @@ HARUSPEX_PROFILE=4b python -m haruspex.train --train data/train.jsonl --out runs
 HARUSPEX_PROFILE=4b python -m haruspex.eval --model runs/haruspex-4b --data data/val.jsonl \
     --compare-url http://127.0.0.1:3001   # vs an OpenJev-4B server
 ```
-Fits your RTX 3060 (12 GB) and an 8 GB Mac at 4-bit; passes the "Jev-class" ≤2×
-cost/latency eligibility gate.
+`--mode head` (freeze backbone, train only the head on cached features) is the fast
+default — the backbone runs a single pass, then the head trains over cached vectors.
+Use `--mode lora` or `--mode full` for more accuracy when you have the compute.
 
 ## Serving (the `/v1/evaluate` + `/v1/systemone` contract)
 
 Haruspex speaks the typed-decision API, self-hosted and **keyless** (the key only
 authenticates a remote gateway, never your own model). It exposes:
 
-- `POST /v1/evaluate` — native Jev shape (Praetor / assay).
+- `POST /v1/evaluate` — native Jev shape (for any client).
 - `POST /v1/systemone` — TypeSafe shape, accepts `noul` as boolean. **This is what
   JevBench's open-weights adapter calls** — submit the public URL of this server, or
   the HF repo.

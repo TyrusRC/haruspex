@@ -1,10 +1,8 @@
 """Profiles + device selection.
 
 Two variants, one codebase:
-  - edge : ModernBERT encoder (~150M) — runs anywhere (CPU/MPS/8GB), the keyless
-           local engine for Praetor/assay. DEFAULT.
-  - 4b   : Qwen3.5-4B decoder + LoRA — the JevBench leaderboard contender (the
-           eligible small class; Capability = avg(Intelligence, Calibration)).
+  - edge : ModernBERT encoder (~150M), CPU / CUDA / Apple-MPS. DEFAULT.
+  - 4b   : Qwen3.5-4B decoder + LoRA — the larger / JevBench-oriented variant.
 
 Select with HARUSPEX_PROFILE=edge|4b; override the base with HARUSPEX_BACKBONE.
 """
@@ -19,7 +17,7 @@ PROFILES: dict[str, dict] = {
 }
 
 DEFAULT_PROFILE = os.environ.get("HARUSPEX_PROFILE", "edge")
-# 512 keeps memory bounded on a 12 GB card for long-state decisions; raise via env.
+# 512 keeps memory bounded for long-state decisions; raise via env when needed.
 MAX_LEN = int(os.environ.get("HARUSPEX_MAX_LEN", "512"))
 
 

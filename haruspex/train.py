@@ -50,8 +50,8 @@ def _collate(chunk: list[Example]):
 
 
 def _enable_memory_savers(backbone):
-    """Gradient checkpointing + no KV-cache — the big activation-memory savers that
-    let a 4B train on a 12 GB card. Best-effort (skip quietly if unsupported)."""
+    """Gradient checkpointing + no KV-cache — reduce activation memory for large
+    backbones. Best-effort (skip quietly if unsupported)."""
     try:
         backbone.gradient_checkpointing_enable()
     except Exception:  # noqa: BLE001 - best-effort hardware opt
@@ -71,7 +71,7 @@ def _enable_memory_savers(backbone):
 def train_sft(model, examples, *, epochs, lr, batch, brier_w, device, micro=2, checkpoint=True):
     # log_temp is calibrated AFTER sft — freeze it here (T=1 during sft).
     model.log_temp.requires_grad_(False)
-    if checkpoint:   # needed for a 4B on 12 GB; a small model fits without it (faster)
+    if checkpoint:   # for large backbones; disable (--no-checkpoint) when the model fits (faster)
         _enable_memory_savers(model.backbone)
     params = [p for n, p in model.named_parameters() if n != "log_temp" and p.requires_grad]
     opt = torch.optim.AdamW(params, lr=lr)
@@ -108,6 +108,41 @@ def _cache_scores(model, examples, chunk_texts=16):
     texts, spans = _collate(examples)
     allscores = model.score_texts(texts, batch_size=chunk_texts).detach().cpu()
     return [(ex, allscores[a:b]) for a, b, ex in spans]
+
+
+@torch.no_grad()
+def _cache_features(model, examples, chunk_texts=16):
+    """Per-example backbone features, computed ONCE (frozen backbone). The head then
+    trains over these cached vectors for many epochs without re-running the backbone."""
+    model.eval()
+    texts, spans = _collate(examples)
+    feats = model.embed_texts(texts, batch_size=chunk_texts).detach()
+    return [(ex, feats[a:b]) for a, b, ex in spans]
+
+
+def train_head(model, examples, *, epochs, lr, batch, brier_w):
+    """Freeze the backbone, cache its features once, train ONLY the head over them.
+    The backbone runs a single inference pass to cache features; the head then
+    trains over those vectors, so the backbone is never re-encoded across epochs."""
+    for p in model.backbone.parameters():
+        p.requires_grad_(False)
+    model.log_temp.requires_grad_(False)
+    cached = _cache_features(model, examples)      # one backbone pass over all data
+    opt = torch.optim.AdamW(model.scorer.parameters(), lr=lr)
+    model.scorer.train()
+    for ep in range(epochs):
+        random.shuffle(cached)
+        total, n = 0.0, 0
+        for i in range(0, len(cached), batch):
+            chunk = cached[i:i + batch]
+            loss = sum(_loss_from_scores(ex, model.scorer(f).squeeze(-1), brier_w)
+                       for ex, f in chunk) / len(chunk)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            total += float(loss.item()) * len(chunk)
+            n += len(chunk)
+        print(f"[head] epoch {ep + 1}/{epochs}  mean_loss={total / max(1, n):.4f}")
 
 
 def fit_temperature(model, cached, steps=300, lr=0.05):
@@ -161,8 +196,11 @@ def main():
     ap.add_argument("--train", required=True)
     ap.add_argument("--val", default="", help="held-out rows for calibration (else split 15%% of train)")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--mode", choices=["head", "lora", "full"], default="head",
+                    help="head=freeze backbone, train only the head on cached features "
+                         "(backbone runs once); lora=LoRA adapter+head; full=whole backbone")
     ap.add_argument("--epochs", type=int, default=3)
-    ap.add_argument("--lr", type=float, default=2e-5)
+    ap.add_argument("--lr", type=float, default=0.0, help="0 = auto (head 1e-3, lora/full 2e-5)")
     ap.add_argument("--batch", type=int, default=8, help="examples per optimizer step (grad accum)")
     ap.add_argument("--micro", type=int, default=2, help="examples per forward (bounds GPU memory)")
     ap.add_argument("--no-checkpoint", dest="checkpoint", action="store_false",
@@ -182,10 +220,16 @@ def main():
         val, train = train[:cut], train[cut:]
     print(f"[init] train={len(train)}  val={len(val)}")
 
-    model = HaruspexModel().to(device)
-    train_sft(model, train, epochs=args.epochs, lr=args.lr, batch=args.batch,
-              brier_w=args.brier_weight, device=device, micro=args.micro,
-              checkpoint=args.checkpoint)
+    lr = args.lr or (1e-3 if args.mode == "head" else 2e-5)
+    model = HaruspexModel(use_lora=(args.mode == "lora")).to(device)
+    print(f"[init] mode={args.mode} lr={lr}")
+    if args.mode == "head":
+        train_head(model, train, epochs=args.epochs, lr=lr, batch=args.batch,
+                   brier_w=args.brier_weight)
+    else:   # lora | full
+        train_sft(model, train, epochs=args.epochs, lr=lr, batch=args.batch,
+                  brier_w=args.brier_weight, device=device, micro=args.micro,
+                  checkpoint=args.checkpoint)
     cached = _cache_scores(model, val)
     fit_temperature(model, cached)
     fit_isotonic(model, cached)
