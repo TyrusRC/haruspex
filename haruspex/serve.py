@@ -64,7 +64,7 @@ def build_app(model_path: str):
         return JSONResponse({"ok": _MODEL is not None, "model": model_path})
 
     async def models(request):
-        # OpenAI-style model list — the JevBench adapter / TypeSafe clients probe this.
+        # OpenAI-style model list — TypeSafe-compatible clients probe this.
         return JSONResponse({"object": "list",
                              "data": [{"id": served_name, "object": "model"}]})
 
@@ -85,8 +85,8 @@ def build_app(model_path: str):
         routes=[
             Route("/health", health, methods=["GET"]),
             Route("/v1/models", models, methods=["GET"]),
-            # /v1/evaluate = native Jev (Praetor/assay); /v1/systemone = TypeSafe shape
-            # (JevBench's open-weights adapter). Same request/response contract.
+            # /v1/evaluate = native Jev shape; /v1/systemone = TypeSafe shape.
+            # Same request/response contract, so any Jev/TypeSafe client works.
             Route("/v1/evaluate", evaluate, methods=["POST"]),
             Route("/v1/systemone", evaluate, methods=["POST"]),
         ],

@@ -6,10 +6,10 @@ Encode `[STATE][QUESTION][CANDIDATE]`, pool one vector, score it with a shared
   boolean -> sigmoid(score / T)   (+ optional isotonic)
   score   -> softmax(level scores / T), value = Σ i · pᵢ
 
-Two backbones share this head:
-  - encoder (ModernBERT): mean-pool the last layer. `edge` profile.
-  - decoder (Qwen3.5-4B): last real-token hidden; LoRA for efficient training,
-    merged into the base at save time so the artifact loads uniformly. `4b` profile.
+Backbone-agnostic pooling:
+  - encoder (default, e.g. ModernBERT): mean-pool the last layer.
+  - decoder (opt-in via env): last real-token hidden; optional LoRA for training,
+    merged into the base at save time so the artifact loads uniformly.
 """
 
 from __future__ import annotations

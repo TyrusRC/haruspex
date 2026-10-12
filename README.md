@@ -41,14 +41,15 @@ The 1-D head means the candidate count is free at runtime — no fixed classifie
 Calibration is **post-hoc** and uses no test labels: NLL+Brier training → temperature
 on a held-out split → isotonic. Evaluation reports Accuracy, Brier, and **ECE**.
 
-Two backbones, one codebase (`HARUSPEX_PROFILE`):
+**Small and local by default.** The backbone is a ModernBERT encoder (~150M) —
+non-autoregressive, single-forward, CPU/edge-friendly. It is backbone-agnostic:
+swap in any Hugging Face encoder (or an opt-in decoder) via env, so the model stays
+general without shipping a large preset.
 
-| Profile | Backbone | Notes |
-|---|---|---|
-| `edge` (default) | ModernBERT-base (~150M, encoder) | small; CPU / CUDA / Apple-MPS |
-| `4b` | Qwen3.5-4B + LoRA (decoder) | larger; LoRA is merged into the base on save, so the artifact loads like any HF model |
-
-Swap the backbone with `HARUSPEX_BACKBONE=<hf-id>` (e.g. a multilingual encoder).
+```sh
+HARUSPEX_BACKBONE=answerdotai/ModernBERT-large     # a bigger encoder, still small
+HARUSPEX_BACKBONE=<small-decoder> HARUSPEX_TYPE=decoder HARUSPEX_LORA=1   # opt-in decoder
+```
 
 ## Install & quickstart
 
@@ -127,19 +128,20 @@ Load it back with `HaruspexModel.load("<you>/haruspex")` or `haruspex-serve`. Lo
 needs the `haruspex` package (the head sits beside the backbone) — a plain `AutoModel`
 load gives only the encoder.
 
-## JevBench
+## Benchmarking (optional)
 
-Haruspex targets the open-weights JevBench decision leaderboard, ranked on **Capability
-= average(Intelligence, Calibration)**. Calibration (half the score) is a post-hoc
-pipeline here; Intelligence comes from the backbone + training data. `haruspex.eval`
-has a `--compare-url` flag to benchmark head-to-head against any `/v1/evaluate` or
-`/v1/systemone` server.
+Haruspex is built to **do work locally**, not to win a leaderboard — the goal is a
+small model with strong calibration that you can run anywhere, not a large one tuned
+for a score. It does speak the Jev / TypeSafe contract, so you *can* evaluate it:
+`haruspex.eval` reports Accuracy / Brier / ECE / latency and has a `--compare-url`
+flag to run head-to-head against any `/v1/evaluate` or `/v1/systemone` server. If you
+benchmark it, judge it on **capability-per-cost** (quality relative to size, latency,
+and memory), which is where a small model is meant to win.
 
 ## Status
 
 Early. The pipeline (train → calibrate → eval → serve) is runnable and validated
-end-to-end; shipped checkpoints and benchmark numbers are **not** published yet. The
-`4b` variant needs a real training run on adequate hardware. Contributions and
+end-to-end; shipped checkpoints are **not** published yet. Contributions and
 independent evaluations are welcome.
 
 ## Contributing

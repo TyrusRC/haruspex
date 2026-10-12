@@ -1,7 +1,7 @@
 """Pull a public decision dataset from the HF Hub and convert it to Haruspex
 decision-row JSONL (data/schema.md).
 
-General decision data (not security-only) is what lifts JevBench "Intelligence".
+General decision data (not just one domain) broadens the model's competence.
 Good sources: shenjunhao/mmdm, and any OpenJevData release. Schemas vary, so this
 prints the detected columns and uses a configurable field mapping — adjust the
 --map flags to the dataset you pull.

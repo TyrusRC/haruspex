@@ -28,7 +28,7 @@ It is optimized for **security operations, offensive and defensive**.
 
 - Backbone: `{base}` ({btype}).
 - Scoring: per-candidate `Linear(h,1)` head → temperature + isotonic calibration.
-- Serves the TypeSafe/JevBench `POST /v1/systemone` contract and native `/v1/evaluate`.
+- Serves the TypeSafe `POST /v1/systemone` contract and native `/v1/evaluate`.
 
 ## Intended use (security, both sides)
 

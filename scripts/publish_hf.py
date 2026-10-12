@@ -5,7 +5,7 @@ Writes a model card (README.md) into the folder, then uploads everything
 
   pip install -e ".[data]"          # brings huggingface_hub
   huggingface-cli login             # or set HF_TOKEN
-  python scripts/publish_hf.py --model runs/haruspex-4b --repo TyrusRC/haruspex
+  python scripts/publish_hf.py --model runs/haruspex --repo <you>/haruspex
 """
 
 from __future__ import annotations
