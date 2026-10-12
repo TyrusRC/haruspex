@@ -1,7 +1,11 @@
-"""Serving-layer mapping tests (pure Python; no torch/starlette needed)."""
+"""Serving map, card, and calibrator tests (pure Python; no torch/gliner2 needed)."""
 
+import json
+import os
+import tempfile
 import unittest
 
+from haruspex.calibrate import SelectiveCalibrator
 from haruspex.serve import _question_to_row
 
 
@@ -35,20 +39,43 @@ class QuestionMappingTest(unittest.TestCase):
 
 
 class CardTest(unittest.TestCase):
-    def test_card_fills_from_meta(self):
-        import json
-        import os
-        import tempfile
-
+    def test_card_fills_from_config(self):
         from haruspex.card import build_card
         d = tempfile.mkdtemp()
-        with open(os.path.join(d, "meta.json"), "w") as fh:
-            json.dump({"backbone": "Qwen/Qwen3.5-4B", "type": "decoder"}, fh)
+        with open(os.path.join(d, "config.json"), "w") as fh:
+            json.dump({"_name_or_path": "fastino/GLiNER2.5-Decide"}, fh)
         card = build_card(d, "TyrusRC/haruspex")
         self.assertIn("TyrusRC/haruspex", card)
-        self.assertIn("Qwen/Qwen3.5-4B", card)
+        self.assertIn("fastino/GLiNER2.5-Decide", card)
         self.assertIn("/v1/systemone", card)
         self.assertIn("apache-2.0", card)
+
+
+class SelectiveCalibratorTest(unittest.TestCase):
+    def test_fit_holds_risk_and_abstains(self):
+        # High-confidence items are correct, low-confidence ones are wrong:
+        # the calibrator should accept the high and abstain on the low.
+        pairs = [(0.9, True), (0.85, True), (0.8, True),
+                 (0.4, False), (0.45, False), (0.5, False)]
+        cal = SelectiveCalibrator.fit(pairs, target_risk=0.1)
+        self.assertLessEqual(cal.achieved_risk, 0.1 + 1e-9)
+        self.assertTrue(cal.apply(0.95)["accept"])
+        self.assertTrue(cal.apply(0.45)["abstain"])
+
+    def test_roundtrip(self):
+        cal = SelectiveCalibrator.fit([(0.9, True), (0.2, False)], target_risk=0.1)
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "calibrator.json")
+        cal.save(p)
+        back = SelectiveCalibrator.load(p)
+        self.assertEqual(back.threshold, cal.threshold)
+        self.assertEqual(back.target_risk, cal.target_risk)
+
+    def test_empty_is_conservative(self):
+        cal = SelectiveCalibrator.fit([], target_risk=0.1)
+        self.assertEqual(cal.threshold, 1.0)
+        self.assertTrue(cal.apply(0.99)["abstain"])   # 0.99 < 1.0 -> abstain
+        self.assertTrue(cal.apply(1.0)["accept"])
 
 
 if __name__ == "__main__":

@@ -1,18 +1,18 @@
-"""Haruspex /v1/evaluate server — the Jev-compatible contract Praetor / assay call.
+"""Haruspex decision server — the Jev / TypeSafe contract Praetor / assay call.
 
   pip install -e ".[serve]"
-  haruspex-serve --model runs/haruspex-v0 --port 3000
-  # or: uvicorn haruspex.serve:app  (set HARUSPEX_MODEL=runs/haruspex-v0)
+  haruspex-serve --model runs/sec --port 3000
+  # or: uvicorn haruspex.serve:app  (set HARUSPEX_MODEL=runs/sec)
 
-Request  (same as hosted Jev):
+Request  (Jev / TypeSafe shape):
   { "model": "...", "state": <str|obj>,
-    "questions": { "<name>": { "type": "boolean"|"choice"|"score",
+    "questions": { "<name>": { "type": "boolean"|"noul"|"choice"|"score",
                                "instructions": "...",
                                "criteria": {true,false} | {opt:desc} | [low,high] } } }
 Response:
   { "model": "haruspex", "answers": { "<name>": { ...calibrated verdict... } } }
 
-It is self-hosted and keyless — the key authenticates a remote gateway only, so
+Self-hosted and keyless — the key authenticates a remote gateway only, so
 Praetor/assay select it with just the base_url (http://127.0.0.1:<port>).
 """
 
@@ -28,8 +28,8 @@ def _load(path: str):
     global _MODEL
     if _MODEL is None:
         from .config import pick_device
-        from .model import HaruspexModel
-        _MODEL = HaruspexModel.load(path, device=pick_device())
+        from .model import Haruspex
+        _MODEL = Haruspex.load(path, device=pick_device())
     return _MODEL
 
 
@@ -52,8 +52,7 @@ def _question_to_row(state, q: dict) -> dict:
 
 def build_app(model_path: str):
     # Built on Starlette directly (FastAPI's base): route handlers receive the
-    # request positionally, so there is no body/query parameter heuristic to
-    # trip over across versions. `state` may be a string OR a JSON object.
+    # request positionally, so there is no body/query heuristic across versions.
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
     from starlette.routing import Route
@@ -64,7 +63,6 @@ def build_app(model_path: str):
         return JSONResponse({"ok": _MODEL is not None, "model": model_path})
 
     async def models(request):
-        # OpenAI-style model list — TypeSafe-compatible clients probe this.
         return JSONResponse({"object": "list",
                              "data": [{"id": served_name, "object": "model"}]})
 
@@ -81,16 +79,13 @@ def build_app(model_path: str):
         return JSONResponse({"model": body.get("model") or served_name, "answers": answers})
 
     _load(model_path)   # warm the model before serving (version-proof: no lifespan hook)
-    return Starlette(
-        routes=[
-            Route("/health", health, methods=["GET"]),
-            Route("/v1/models", models, methods=["GET"]),
-            # /v1/evaluate = native Jev shape; /v1/systemone = TypeSafe shape.
-            # Same request/response contract, so any Jev/TypeSafe client works.
-            Route("/v1/evaluate", evaluate, methods=["POST"]),
-            Route("/v1/systemone", evaluate, methods=["POST"]),
-        ],
-    )
+    return Starlette(routes=[
+        Route("/health", health, methods=["GET"]),
+        Route("/v1/models", models, methods=["GET"]),
+        # /v1/evaluate = native Jev shape; /v1/systemone = TypeSafe shape; same contract.
+        Route("/v1/evaluate", evaluate, methods=["POST"]),
+        Route("/v1/systemone", evaluate, methods=["POST"]),
+    ])
 
 
 # `uvicorn haruspex.serve:app` entry (reads HARUSPEX_MODEL).
@@ -101,12 +96,13 @@ if os.environ.get("HARUSPEX_MODEL"):
 
 def main():
     ap = argparse.ArgumentParser(description="Serve Haruspex over /v1/evaluate")
-    ap.add_argument("--model", required=True)
+    ap.add_argument("--model", default="", help="model id/dir (default base)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=3000)
     args = ap.parse_args()
+    from .config import resolve_model
     import uvicorn
-    uvicorn.run(build_app(args.model), host=args.host, port=args.port)
+    uvicorn.run(build_app(resolve_model(args.model)), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

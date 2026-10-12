@@ -1,166 +1,91 @@
-"""HaruspexModel — backbone-agnostic per-candidate scorer + calibrated readout.
+"""Haruspex — a thin, calibrated decision wrapper over GLiNER2.5-Decide.
 
-Encode `[STATE][QUESTION][CANDIDATE]`, pool one vector, score it with a shared
-`Linear(h, 1)` head, temperature-scale, normalize per question:
-  choice  -> softmax(scores / T)
-  boolean -> sigmoid(score / T)   (+ optional isotonic)
-  score   -> softmax(level scores / T), value = Σ i · pᵢ
+Load the published encoder (or a fine-tuned copy), classify a decision row into
+one typed verdict, and (optionally) gate it through a selective calibrator that
+abstains when the model is not confident enough for the operator's risk budget.
 
-Backbone-agnostic pooling:
-  - encoder (default, e.g. ModernBERT): mean-pool the last layer.
-  - decoder (opt-in via env): last real-token hidden; optional LoRA for training,
-    merged into the base at save time so the artifact loads uniformly.
+The model is REUSED, not rebuilt. Haruspex adds: the typed decision contract
+(boolean / choice / score), the specialization data + training wrapper, and the
+selective-calibration / abstention layer.
 """
 
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-from transformers import AutoModel, AutoTokenizer
-
-from .config import MAX_LEN, resolve_profile
-from .data import normalize
+from .config import resolve_model
+from .data import decision_text, label_map
 
 
-def _wrap_lora(base):
-    from peft import LoraConfig, get_peft_model
-    cfg = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none",
-                     target_modules=["q_proj", "k_proj", "v_proj", "o_proj"])
-    return get_peft_model(base, cfg)
-
-
-class OptionInteractor(nn.Module):
-    """Scores a question's candidate vectors JOINTLY — the accuracy lever that
-    needs no bigger backbone. A light self-attention over the candidate set lets
-    each option's score depend on the others (competition / overlap), then a scalar
-    readout. Works for any candidate count n>=1. ~a few M params at h=768."""
-
-    def __init__(self, hidden: int, heads: int = 4):
-        super().__init__()
-        nh = heads if hidden % heads == 0 else 1
-        self.attn = nn.MultiheadAttention(hidden, nh, batch_first=True)
-        self.norm = nn.LayerNorm(hidden)
-        self.out = nn.Linear(hidden, 1)
-
-    def forward(self, feats: torch.Tensor) -> torch.Tensor:   # feats: [n, hidden]
-        x = feats.unsqueeze(0)                                 # [1, n, hidden]
-        a, _ = self.attn(x, x, x, need_weights=False)
-        x = self.norm(x + a)
-        return self.out(x).squeeze(0).squeeze(-1)              # [n]
-
-
-class HaruspexModel(nn.Module):
-    def __init__(self, backbone: str = "", backbone_type: str = "", use_lora: bool | None = None):
-        super().__init__()
-        prof = resolve_profile()
-        self.backbone_name = backbone or prof["backbone"]
-        self.backbone_type = backbone_type or prof["type"]      # "encoder" | "decoder"
-        self.use_lora = prof["lora"] if use_lora is None else use_lora
-
-        base = AutoModel.from_pretrained(self.backbone_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.backbone_name)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        # right-pad so decoder last-real-token pooling (attention_mask.sum-1) is correct
-        self.tokenizer.padding_side = "right"
-        hidden = base.config.hidden_size
-        if self.use_lora:
-            base = _wrap_lora(base)
-        self.backbone = base
-        self.head = OptionInteractor(hidden)            # set-interaction + scalar readout
-        self.log_temp = nn.Parameter(torch.zeros(()))   # T = exp(log_temp), starts 1.0
-        self.iso_x: list[float] = []
-        self.iso_y: list[float] = []
-
-    @property
-    def temperature(self) -> torch.Tensor:
-        return self.log_temp.exp()
-
-    def _pool(self, hs, attention_mask):
-        if self.backbone_type == "decoder":
-            idx = attention_mask.sum(1) - 1                 # last real (non-pad) token
-            return hs[torch.arange(hs.size(0), device=hs.device), idx]
-        mask = attention_mask.unsqueeze(-1).to(hs.dtype)    # encoder: mean-pool
-        return (hs * mask).sum(1) / mask.sum(1).clamp(min=1e-6)
-
-    def _embed(self, input_ids, attention_mask) -> torch.Tensor:
-        """Pooled representation per input (the vector the head scores)."""
-        out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        pooled = self._pool(out.last_hidden_state, attention_mask)
-        # backbone may be bf16/fp16 (decoders default to it); the head is fp32
-        return pooled.to(self.head.out.weight.dtype)
-
-    def _device(self) -> torch.device:
-        return next(self.parameters()).device
-
-    def embed_texts(self, texts: list[str], batch_size: int = 16) -> torch.Tensor:
-        """Backbone features per text (pre-head). Caller wraps in no_grad to CACHE
-        them once for frozen-backbone (head-only) training."""
-        dev = self._device()
-        outs: list[torch.Tensor] = []
-        for i in range(0, len(texts), batch_size):
-            enc = self.tokenizer(texts[i:i + batch_size], truncation=True, max_length=MAX_LEN,
-                                 padding=True, return_tensors="pt").to(dev)
-            outs.append(self._embed(enc["input_ids"], enc["attention_mask"]))
-        return torch.cat(outs) if outs else torch.empty(0, device=dev)
-
-    def score_group(self, feats: torch.Tensor) -> torch.Tensor:
-        """Head over ONE question's candidate features [n, h] -> [n] raw scores
-        (set-interaction across the candidates)."""
-        return self.head(feats)
-
-    # ---- readout -------------------------------------------------------------
-
-    def _apply_iso(self, p: float) -> float:
-        if not self.iso_x:
-            return p
-        import numpy as np
-        return float(np.interp(p, self.iso_x, self.iso_y))
-
-    @torch.no_grad()
-    def decide(self, row: dict) -> dict:
-        ex = normalize(row)
-        t = float(self.temperature.item())
-        s = self.score_group(self.embed_texts(ex.texts))
-        if ex.type == "boolean":
-            return {"type": "boolean", "probability": self._apply_iso(torch.sigmoid(s[0] / t).item())}
-        probs = torch.softmax(s / t, dim=0).tolist()
-        if ex.type == "choice":
-            best = int(max(range(len(probs)), key=lambda i: probs[i]))
-            return {"type": "choice", "choice": ex.names[best],
-                    "probabilities": dict(zip(ex.names, probs))}
-        return {"type": "score", "score": sum(i * p for i, p in enumerate(probs)),
-                "probabilities": {str(i): p for i, p in enumerate(probs)}}
-
-    # ---- persistence ---------------------------------------------------------
-
-    def save(self, path: str | Path) -> None:
-        path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
-        backbone = self.backbone
-        if self.use_lora and hasattr(backbone, "merge_and_unload"):
-            backbone = backbone.merge_and_unload()      # fold LoRA -> plain base, uniform load
-        backbone.save_pretrained(path)
-        self.tokenizer.save_pretrained(path)
-        torch.save({"head": self.head.state_dict(), "log_temp": self.log_temp.detach().cpu()},
-                   path / "head.pt")
-        (path / "meta.json").write_text(json.dumps(
-            {"backbone": self.backbone_name, "type": self.backbone_type,
-             "iso_x": self.iso_x, "iso_y": self.iso_y}, indent=2))
+class Haruspex:
+    def __init__(self, model, calibrator=None):
+        self.model = model
+        self.calibrator = calibrator
 
     @classmethod
-    def load(cls, path: str | Path, device: str = "cpu") -> "HaruspexModel":
-        path = Path(path)
-        meta = json.loads((path / "meta.json").read_text())
-        # Load the merged artifact from `path` (never LoRA at inference).
-        m = cls(backbone=str(path), backbone_type=meta.get("type", "encoder"), use_lora=False)
-        m.backbone_name = meta.get("backbone", str(path))
-        head = torch.load(path / "head.pt", map_location="cpu")
-        m.head.load_state_dict(head["head"])
-        with torch.no_grad():
-            m.log_temp.copy_(head["log_temp"])
-        m.iso_x, m.iso_y = meta.get("iso_x", []), meta.get("iso_y", [])
-        return m.to(device).eval()
+    def load(cls, path: str = "", device: str = "cpu", calibrator=None) -> "Haruspex":
+        """Load a GLiNER2.5-Decide base, or a Haruspex adapter artifact (a dir with
+        `haruspex.json`: the reused base + a LoRA adapter reattached at inference).
+        A sibling `calibrator.json` is picked up automatically when present."""
+        model_id = resolve_model(path)
+        manifest = Path(model_id) / "haruspex.json"
+        if manifest.exists():
+            from gliner2 import GLiNER2
+            spec = json.loads(manifest.read_text())
+            model = GLiNER2.from_pretrained(spec["base"])
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")   # load_adapter warns as deprecated
+                model.load_adapter(str(Path(model_id) / spec.get("adapter", "final")))
+        else:
+            from gliner2 import AutoExtractor
+            model = AutoExtractor.from_pretrained(model_id)
+        if device and device != "cpu":
+            try:
+                model.to(device) if hasattr(model, "to") else model.cuda()
+            except Exception:  # noqa: BLE001 - fall back to CPU if the move fails
+                pass
+        if calibrator is None:
+            cal = Path(model_id) / "calibrator.json"
+            if cal.exists():
+                from .calibrate import SelectiveCalibrator
+                calibrator = SelectiveCalibrator.load(cal)
+        return cls(model, calibrator)
+
+    def _classify(self, row: dict) -> tuple[str, float]:
+        """Top label + its confidence for one decision row.
+        Uses the lightweight dict-form task: GLiNER2's schema path for top_k /
+        multi_label is bugged (processor IndexError), so full per-label
+        distributions are not available yet — see calibrate.py.
+        """
+        descs = label_map(row)
+        out = self.model.classify_text(decision_text(row), {"decision": descs},
+                                       threshold=0.0, include_confidence=True)
+        res = out.get("decision")
+        if isinstance(res, dict):
+            return res.get("label", ""), float(res.get("confidence", 0.0))
+        # format_results without confidence returns the bare label
+        return (res or ""), 1.0
+
+    def decide(self, row: dict) -> dict:
+        """Return a typed, calibrated verdict for one decision row."""
+        t = (row.get("type") or "boolean").lower()
+        if t == "noul":
+            t = "boolean"
+        label, conf = self._classify(row)
+        if t == "boolean":
+            p_yes = conf if label == "yes" else 1.0 - conf
+            verdict = {"type": "boolean", "label": label, "probability": round(p_yes, 6),
+                       "confidence": round(conf, 6)}
+        elif t == "choice":
+            verdict = {"type": "choice", "choice": label, "confidence": round(conf, 6),
+                       "probabilities": {label: round(conf, 6)}}
+        else:  # score
+            levels = [str(x) for x in (row.get("levels") or [])]
+            idx = levels.index(label) if label in levels else -1
+            verdict = {"type": "score", "score": idx, "level": label,
+                       "confidence": round(conf, 6), "probabilities": {label: round(conf, 6)}}
+        if self.calibrator is not None:
+            verdict.update(self.calibrator.apply(conf))
+        return verdict

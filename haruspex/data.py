@@ -1,97 +1,101 @@
-"""Decision-row schema, text building, and dataset loading.
+"""Decision-row schema + helpers.
 
-On-disk format (JSONL, one decision per line). Three types, mirroring the Jev /
-OpenJev contract:
+On-disk format (JSONL, one decision per line), unchanged across the rebuild:
 
   {"type":"boolean","state":"...","question":"...",
    "criteria":{"true":"...","false":"..."},"target":true}
 
   {"type":"choice","state":"...","question":"...",
-   "candidates":{"billing":"payment problems","shipping":"delivery problems"},
-   "target":"billing"}            # or "target":{"billing":0.8,"shipping":0.2}
+   "candidates":{"bfla":"broken function-level auth","tls":"TLS config"},
+   "target":"bfla"}
 
   {"type":"score","state":"...","question":"...",
-   "levels":["low","medium","high"],"target":2}   # index, or a float
+   "levels":["low","medium","high","critical"],"target":3}   # index into levels
 
-Each decision becomes one or more scored inputs (one per candidate / level /
-the boolean hypothesis). The encoder scores each input; the readout normalizes
-per question.
+The model layer maps a row to a single GLiNER2 classification task (the task
+labels are the candidates / levels / yes-no). These helpers are pure Python so
+they import without torch/gliner2.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 
 
-def build_input(state, question: str, candidate: str) -> str:
-    """The text scored for one candidate. `state` may be a string or a JSON-able
-    object (serialized compactly)."""
+def decision_text(row: dict) -> str:
+    """The text the model classifies: the state followed by the question.
+    `state` may be a string or a JSON-able object (serialized compactly)."""
+    state = row.get("state", "")
     s = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False, default=str)
-    cand = candidate.strip() if candidate else ""
-    return f"[STATE]\n{s}\n\n[QUESTION]\n{question.strip()}\n\n[CANDIDATE]\n{cand}"
+    return f"{s} {row.get('question', '')}".strip()
 
 
-@dataclass
-class Example:
-    """A normalized, model-ready decision."""
-
-    type: str                 # boolean | choice | score
-    texts: list[str]          # one encoded input per candidate (boolean -> 1)
-    target: list[float]       # distribution over candidates (boolean -> [p_yes])
-    names: list[str] = field(default_factory=list)   # option/level labels for readout
-
-
-def _choice_target(target, names: list[str]) -> list[float]:
-    if isinstance(target, dict):
-        return [float(target.get(n, 0.0)) for n in names]
-    vec = [0.0] * len(names)
-    if target in names:
-        vec[names.index(target)] = 1.0
-    return vec
-
-
-def normalize(row: dict) -> Example:
-    """Turn one on-disk row into an Example. Raises ValueError on a bad row."""
+def label_map(row: dict) -> dict[str, str]:
+    """Ordered {label: description} for the row's classification task.
+    boolean -> yes/no with the criteria as descriptions; choice -> candidates;
+    score -> levels (the level name is its own description)."""
     t = (row.get("type") or "").lower()
-    state, question = row.get("state", ""), row.get("question", "")
     if t == "boolean":
         crit = row.get("criteria") or {}
-        hyp = crit.get("true") or "This statement is true."
-        y = row.get("target")
-        p = float(y) if isinstance(y, (int, float)) and not isinstance(y, bool) else (1.0 if y else 0.0)
-        return Example("boolean", [build_input(state, question, hyp)], [p], ["true"])
+        return {"yes": crit.get("true", "yes"), "no": crit.get("false", "no")}
     if t == "choice":
-        cands = row.get("candidates") or {}
-        names = list(cands.keys())
-        if len(names) < 2:
+        cands = dict(row.get("candidates") or {})
+        if len(cands) < 2:
             raise ValueError("choice needs >=2 candidates")
-        texts = [build_input(state, question, f"{n}: {cands[n]}") for n in names]
-        return Example("choice", texts, _choice_target(row.get("target"), names), names)
+        return cands
     if t == "score":
-        levels = row.get("levels") or []
+        levels = [str(x) for x in (row.get("levels") or [])]
         if len(levels) < 2:
             raise ValueError("score needs >=2 levels")
-        names = [str(x) for x in levels]
-        texts = [build_input(state, question, lv) for lv in names]
-        tgt = row.get("target")
-        vec = [0.0] * len(names)
-        if isinstance(tgt, (int, float)) and not isinstance(tgt, bool):
-            idx = max(0, min(len(names) - 1, int(round(float(tgt)))))
-            vec[idx] = 1.0
-        return Example("score", texts, vec, names)
+        return {lv: lv for lv in levels}
     raise ValueError(f"unknown decision type {t!r}")
 
 
-def load_jsonl(path: str | Path) -> list[Example]:
-    out: list[Example] = []
+def labels_ordered(row: dict) -> list[str]:
+    return list(label_map(row).keys())
+
+
+def gold_label(row: dict):
+    """The correct label string for a row, or None when the row is unlabeled."""
+    t = (row.get("type") or "").lower()
+    tgt = row.get("target")
+    if tgt is None:
+        return None
+    if t == "boolean":
+        return "yes" if (tgt is True or (isinstance(tgt, (int, float)) and tgt >= 0.5)) else "no"
+    if t == "choice":
+        return str(tgt)
+    if t == "score":
+        levels = [str(x) for x in (row.get("levels") or [])]
+        idx = max(0, min(len(levels) - 1, int(round(float(tgt)))))
+        return levels[idx] if levels else None
+    raise ValueError(f"unknown decision type {t!r}")
+
+
+def load_rows(path: str | Path) -> list[dict]:
+    """Read decision rows from JSONL (blank lines and # comments skipped)."""
+    out: list[dict] = []
     for i, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines()):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         try:
-            out.append(normalize(json.loads(line)))
-        except (ValueError, json.JSONDecodeError) as e:
+            out.append(json.loads(line))
+        except json.JSONDecodeError as e:
             raise ValueError(f"{path}:{i + 1}: {e}") from e
     return out
+
+
+def to_input_example(row: dict):
+    """One labeled row -> a GLiNER2 `InputExample` with a single classification
+    task. Imports gliner2 lazily (training-only dependency)."""
+    from gliner2 import InputExample
+    from gliner2.training import Classification
+
+    descs = label_map(row)
+    gold = gold_label(row)
+    if gold is None:
+        raise ValueError("training row needs a 'target'")
+    cls = Classification("decision", list(descs.keys()), gold, label_descriptions=descs)
+    return InputExample(text=decision_text(row), classifications=[cls])

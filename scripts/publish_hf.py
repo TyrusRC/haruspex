@@ -1,7 +1,7 @@
 """Publish a trained Haruspex model folder to the Hugging Face Hub.
 
 Writes a model card (README.md) into the folder, then uploads everything
-(backbone weights + tokenizer + head.pt + meta.json + card).
+(the merged GLiNER2.5-Decide model + tokenizer + calibrator.json + card).
 
   pip install -e ".[data]"          # brings huggingface_hub
   huggingface-cli login             # or set HF_TOKEN
@@ -29,8 +29,8 @@ def main():
     args = ap.parse_args()
 
     model_dir = Path(args.model)
-    if not (model_dir / "meta.json").exists():
-        sys.exit(f"error: {model_dir} is not a Haruspex model dir (no meta.json)")
+    if not (model_dir / "config.json").exists():
+        sys.exit(f"error: {model_dir} is not a model dir (no config.json)")
 
     card = write_card(model_dir, args.repo)
     print(f"[publish] wrote model card -> {card}")
