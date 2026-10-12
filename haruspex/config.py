@@ -19,7 +19,8 @@ PROFILES: dict[str, dict] = {
 }
 
 DEFAULT_PROFILE = os.environ.get("HARUSPEX_PROFILE", "edge")
-MAX_LEN = int(os.environ.get("HARUSPEX_MAX_LEN", "1024"))
+# 512 keeps memory bounded on a 12 GB card for long-state decisions; raise via env.
+MAX_LEN = int(os.environ.get("HARUSPEX_MAX_LEN", "512"))
 
 
 def resolve_profile(name: str = "") -> dict:
