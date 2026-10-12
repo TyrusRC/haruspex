@@ -29,17 +29,24 @@ def main():
     args = ap.parse_args()
 
     model_dir = Path(args.model)
-    if not (model_dir / "config.json").exists():
-        sys.exit(f"error: {model_dir} is not a model dir (no config.json)")
+    # Accept either the adapter artifact (haruspex.json + a LoRA adapter) or a
+    # standalone merged model dir (config.json).
+    is_adapter = (model_dir / "haruspex.json").exists()
+    is_merged = (model_dir / "config.json").exists()
+    if not (is_adapter or is_merged):
+        sys.exit(f"error: {model_dir} is not a Haruspex model dir (no haruspex.json or config.json)")
 
     card = write_card(model_dir, args.repo)
-    print(f"[publish] wrote model card -> {card}")
+    print(f"[publish] wrote model card -> {card}  ({'adapter' if is_adapter else 'merged'})")
 
     from huggingface_hub import HfApi
     api = HfApi(token=args.token or None)
     api.create_repo(args.repo, private=args.private, exist_ok=True, repo_type="model")
     print(f"[publish] uploading {model_dir} -> https://huggingface.co/{args.repo}")
-    api.upload_folder(folder_path=str(model_dir), repo_id=args.repo, repo_type="model")
+    # Ship the artifact, not the training bookkeeping (logs, failed-batch dumps, configs).
+    api.upload_folder(folder_path=str(model_dir), repo_id=args.repo, repo_type="model",
+                      ignore_patterns=["logs/*", "training_config.json", "failed_batches.jsonl",
+                                       "**/optimizer.pt", "**/scheduler.pt"])
     print(f"[publish] done -> https://huggingface.co/{args.repo}")
 
 

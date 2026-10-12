@@ -54,6 +54,16 @@ selective layer at target risk 0.1 then accepts only the most-confident ~2.5 % w
 **zero accepted errors** — correct for a weak partial model; higher coverage needs a
 fuller train.
 
+**Security held-out — data size matters, and 97 rows is not enough.** On a 20-row
+held-out split of `data/security.jsonl`, the base zero-shot scores **0.75**; LoRA
+fine-tuning on the 77-row train split *lowered* it (0.55–0.60 across 1–10 epochs) with
+train loss collapsing to ~0 — classic overfitting on too little data. A calibrator fit on
+that memorized train set also gives a false risk guarantee out-of-sample. Conclusion: for
+security right now, **use the base zero-shot**; specialization will only help once the
+dataset grows to hundreds–thousands of diverse rows (and the calibrator is fit on a true
+held-out split, not train). The general-data result above shows the method works when the
+data is there — the security pack simply needs to be bigger.
+
 **Training cost — the base is DeBERTa-v3-large, whose disentangled attention is
 memory-heavy** (take note before you scale up):
 
@@ -161,8 +171,10 @@ Load it back with `Haruspex.load("<you>/haruspex", device="cuda")`.
 ## Status
 
 Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end, and a real
-train→held-out-eval cycle on a 12 GB RTX 3060 shows a genuine (if partial) gain — see
-[Measured](#measured-rtx-3060-12-gb-wsl2). Known limits, all noted there or in code:
+train→held-out-eval cycle on a 12 GB RTX 3060 shows a genuine (if partial) gain on
+general data — see [Measured](#measured-rtx-3060-12-gb-wsl2). **For security, use the base
+zero-shot for now:** the 97-row pack is too small to specialize without overfitting, so no
+trained security checkpoint is published yet. Known limits, all noted there or in code:
 a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
 memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* (beyond
 abstention) wait on a gliner2 per-label-score fix. Contributions and independent
