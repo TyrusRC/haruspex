@@ -32,6 +32,26 @@ def _wrap_lora(base):
     return get_peft_model(base, cfg)
 
 
+class OptionInteractor(nn.Module):
+    """Scores a question's candidate vectors JOINTLY — the accuracy lever that
+    needs no bigger backbone. A light self-attention over the candidate set lets
+    each option's score depend on the others (competition / overlap), then a scalar
+    readout. Works for any candidate count n>=1. ~a few M params at h=768."""
+
+    def __init__(self, hidden: int, heads: int = 4):
+        super().__init__()
+        nh = heads if hidden % heads == 0 else 1
+        self.attn = nn.MultiheadAttention(hidden, nh, batch_first=True)
+        self.norm = nn.LayerNorm(hidden)
+        self.out = nn.Linear(hidden, 1)
+
+    def forward(self, feats: torch.Tensor) -> torch.Tensor:   # feats: [n, hidden]
+        x = feats.unsqueeze(0)                                 # [1, n, hidden]
+        a, _ = self.attn(x, x, x, need_weights=False)
+        x = self.norm(x + a)
+        return self.out(x).squeeze(0).squeeze(-1)              # [n]
+
+
 class HaruspexModel(nn.Module):
     def __init__(self, backbone: str = "", backbone_type: str = "", use_lora: bool | None = None):
         super().__init__()
@@ -50,7 +70,7 @@ class HaruspexModel(nn.Module):
         if self.use_lora:
             base = _wrap_lora(base)
         self.backbone = base
-        self.scorer = nn.Linear(hidden, 1)
+        self.head = OptionInteractor(hidden)            # set-interaction + scalar readout
         self.log_temp = nn.Parameter(torch.zeros(()))   # T = exp(log_temp), starts 1.0
         self.iso_x: list[float] = []
         self.iso_y: list[float] = []
@@ -71,10 +91,7 @@ class HaruspexModel(nn.Module):
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         pooled = self._pool(out.last_hidden_state, attention_mask)
         # backbone may be bf16/fp16 (decoders default to it); the head is fp32
-        return pooled.to(self.scorer.weight.dtype)
-
-    def forward(self, input_ids, attention_mask) -> torch.Tensor:
-        return self.scorer(self._embed(input_ids, attention_mask)).squeeze(-1)
+        return pooled.to(self.head.out.weight.dtype)
 
     def _device(self) -> torch.device:
         return next(self.parameters()).device
@@ -90,14 +107,10 @@ class HaruspexModel(nn.Module):
             outs.append(self._embed(enc["input_ids"], enc["attention_mask"]))
         return torch.cat(outs) if outs else torch.empty(0, device=dev)
 
-    def score_texts(self, texts: list[str], batch_size: int = 16) -> torch.Tensor:
-        dev = self._device()
-        scores: list[torch.Tensor] = []
-        for i in range(0, len(texts), batch_size):
-            enc = self.tokenizer(texts[i:i + batch_size], truncation=True, max_length=MAX_LEN,
-                                 padding=True, return_tensors="pt").to(dev)
-            scores.append(self.forward(enc["input_ids"], enc["attention_mask"]))
-        return torch.cat(scores) if scores else torch.empty(0, device=dev)
+    def score_group(self, feats: torch.Tensor) -> torch.Tensor:
+        """Head over ONE question's candidate features [n, h] -> [n] raw scores
+        (set-interaction across the candidates)."""
+        return self.head(feats)
 
     # ---- readout -------------------------------------------------------------
 
@@ -111,7 +124,7 @@ class HaruspexModel(nn.Module):
     def decide(self, row: dict) -> dict:
         ex = normalize(row)
         t = float(self.temperature.item())
-        s = self.score_texts(ex.texts)
+        s = self.score_group(self.embed_texts(ex.texts))
         if ex.type == "boolean":
             return {"type": "boolean", "probability": self._apply_iso(torch.sigmoid(s[0] / t).item())}
         probs = torch.softmax(s / t, dim=0).tolist()
@@ -132,7 +145,7 @@ class HaruspexModel(nn.Module):
             backbone = backbone.merge_and_unload()      # fold LoRA -> plain base, uniform load
         backbone.save_pretrained(path)
         self.tokenizer.save_pretrained(path)
-        torch.save({"scorer": self.scorer.state_dict(), "log_temp": self.log_temp.detach().cpu()},
+        torch.save({"head": self.head.state_dict(), "log_temp": self.log_temp.detach().cpu()},
                    path / "head.pt")
         (path / "meta.json").write_text(json.dumps(
             {"backbone": self.backbone_name, "type": self.backbone_type,
@@ -146,7 +159,7 @@ class HaruspexModel(nn.Module):
         m = cls(backbone=str(path), backbone_type=meta.get("type", "encoder"), use_lora=False)
         m.backbone_name = meta.get("backbone", str(path))
         head = torch.load(path / "head.pt", map_location="cpu")
-        m.scorer.load_state_dict(head["scorer"])
+        m.head.load_state_dict(head["head"])
         with torch.no_grad():
             m.log_temp.copy_(head["log_temp"])
         m.iso_x, m.iso_y = meta.get("iso_x", []), meta.get("iso_y", [])

@@ -85,8 +85,9 @@ def train_sft(model, examples, *, epochs, lr, batch, brier_w, device, micro=2, c
         for i in range(0, len(examples), micro):
             mb = examples[i:i + micro]
             texts, spans = _collate(mb)
-            scores = model.score_texts(texts, batch_size=len(texts))
-            loss = sum(_loss_from_scores(ex, scores[a:b], brier_w) for a, b, ex in spans) / batch
+            feats = model.embed_texts(texts, batch_size=len(texts))   # one batched backbone pass
+            loss = sum(_loss_from_scores(ex, model.score_group(feats[a:b]), brier_w)
+                       for a, b, ex in spans) / batch
             loss.backward()
             total += float(loss.item()) * batch        # undo the /batch for logging
             n += len(mb)
@@ -103,11 +104,12 @@ def train_sft(model, examples, *, epochs, lr, batch, brier_w, device, micro=2, c
 
 @torch.no_grad()
 def _cache_scores(model, examples, chunk_texts=16):
-    """Per-example scores (detached), computed in one batched pass over all texts."""
+    """Per-example head scores (detached): one batched backbone pass, then the head
+    per question."""
     model.eval()
     texts, spans = _collate(examples)
-    allscores = model.score_texts(texts, batch_size=chunk_texts).detach().cpu()
-    return [(ex, allscores[a:b]) for a, b, ex in spans]
+    feats = model.embed_texts(texts, batch_size=chunk_texts)
+    return [(ex, model.score_group(feats[a:b]).detach().cpu()) for a, b, ex in spans]
 
 
 @torch.no_grad()
@@ -128,14 +130,14 @@ def train_head(model, examples, *, epochs, lr, batch, brier_w):
         p.requires_grad_(False)
     model.log_temp.requires_grad_(False)
     cached = _cache_features(model, examples)      # one backbone pass over all data
-    opt = torch.optim.AdamW(model.scorer.parameters(), lr=lr)
-    model.scorer.train()
+    opt = torch.optim.AdamW(model.head.parameters(), lr=lr)
+    model.head.train()
     for ep in range(epochs):
         random.shuffle(cached)
         total, n = 0.0, 0
         for i in range(0, len(cached), batch):
             chunk = cached[i:i + batch]
-            loss = sum(_loss_from_scores(ex, model.scorer(f).squeeze(-1), brier_w)
+            loss = sum(_loss_from_scores(ex, model.score_group(f), brier_w)
                        for ex, f in chunk) / len(chunk)
             opt.zero_grad()
             loss.backward()

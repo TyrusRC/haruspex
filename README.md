@@ -75,6 +75,22 @@ Memory knobs for large backbones: `--micro` (examples per forward, grad-accumula
 `--batch`), gradient checkpointing (on by default, `--no-checkpoint` to disable),
 `HARUSPEX_MAX_LEN`.
 
+### Hardware
+
+Haruspex is small-native, not a quantized large model. **`--mode head` trains on a
+modest GPU** — measured peak ~0.9 GB on a 12 GB RTX 3060 (the backbone runs once for
+inference, then only the head trains), and it runs on CPU too. **`--mode full`/`lora`
+fine-tune the backbone** and need more memory, especially on long inputs — lower
+`--micro` / `HARUSPEX_MAX_LEN` or use a larger GPU. For local use, head mode is the
+intended path.
+
+### Accuracy
+
+The head is an **OptionInteractor**: a light self-attention over a question's candidate
+vectors (so each option's score accounts for the others — competition/overlap) plus a
+scalar readout. It raises accuracy without a larger backbone, and because it operates
+on the small candidate vectors it trains fast in head mode.
+
 ## Serving (Jev / TypeSafe HTTP contract)
 
 Self-hosted and **keyless** (the key only authenticates a remote gateway, never your
