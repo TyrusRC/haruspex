@@ -87,13 +87,14 @@ print(m.decide({"type": "boolean",
 Specialize, calibrate, evaluate, serve:
 
 ```sh
-python -m haruspex.train     --train data/security_seed.jsonl --out runs/sec
+python scripts/split_data.py data/security.jsonl --test-frac 0.2        # train + held-out test
+python -m haruspex.train     --train data/security_train.jsonl --out runs/sec
 # real-scale / long rows on a 12 GB GPU: add memory flags
-# python -m haruspex.train   --train data/train.jsonl --out runs/sec \
+# python -m haruspex.train   --train data/security_train.jsonl --out runs/sec \
 #     --batch 2 --grad-accum 4 --grad-checkpoint --max-len 192
-python -m haruspex.calibrate --model runs/sec --data data/val.jsonl --target-risk 0.1
-python -m haruspex.eval      --model runs/sec --data data/val.jsonl   # Accuracy/ECE/Brier/latency + coverage/risk
-python -m haruspex.serve     --model runs/sec --port 3000             # POST /v1/systemone · /v1/evaluate
+python -m haruspex.calibrate --model runs/sec --data data/security_train.jsonl --target-risk 0.1
+python -m haruspex.eval      --model runs/sec --data data/security_test.jsonl  # held-out: Accuracy/ECE/Brier + coverage/risk
+python -m haruspex.serve     --model runs/sec --port 3000               # POST /v1/systemone · /v1/evaluate
 ```
 
 Device auto-selects (CUDA → Apple-MPS → CPU); override with `--device`.
@@ -104,15 +105,27 @@ JSONL decision rows — format in [`data/schema.md`](data/schema.md). One row ma
 GLiNER2 classification task (labels = the candidates / levels / yes-no). Bootstrap labels
 from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
-## Example domain pack: security operations
+## Security decision dataset
 
-`data/security_seed.jsonl` is a worked example — labeled decisions for both sides of
-security work. The model itself is general; point it at your own decisions.
+`data/security.jsonl` is the curated dataset — 97 clean, labeled decisions spanning both
+sides of security work, across all three decision types (boolean / choice / score) and
+14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
+is general; point it at your own decisions too.
 
 - **Offensive:** template/probe relevance, "is this scanner hit a real finding?",
-  finding severity, verdict discipline (vulnerable / not-vulnerable / inconclusive).
+  verdict discipline (vulnerable / not-vulnerable / inconclusive), finding severity,
+  test-class prioritization, CVE applicability, chain-worthiness of a low finding.
 - **Defensive:** alert triage (true vs false positive), alert severity, detection-rule
-  applicability, incident routing, CVE applicability + remediation urgency.
+  applicability to a log source, incident routing, CVE remediation urgency, phishing,
+  telemetry selection.
+
+Every row carries `side` / `category` / `id` tags. The dataset is gated clean, and a
+stratified held-out split keeps a test set the model never trains on:
+
+```sh
+python scripts/validate_data.py data/security.jsonl --build   # schema + dupes + balance; exits non-zero on error
+python scripts/split_data.py    data/security.jsonl --test-frac 0.2   # -> *_train.jsonl + *_test.jsonl (held out)
+```
 
 ## Serving (Jev / TypeSafe HTTP contract)
 
