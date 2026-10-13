@@ -18,6 +18,7 @@ data/*.jsonl
 # derived splits (regenerate with scripts/split_data.py) stay ignored:
 data/security_train.jsonl
 data/security_test.jsonl
+data/security_cal.jsonl
 
 # OS / editor
 .DS_Store
