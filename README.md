@@ -55,23 +55,23 @@ selective layer at target risk 0.1 then accepts only the most-confident ~2.5 % w
 fuller train.
 
 **Security held-out — with enough data, specialization helps.** `data/security.jsonl` is
-157 clean rows. On a stratified 3-way split (train 102 / cal 22 / test 33):
+157 clean rows. On a stratified 3-way split (train 102 / cal 22 / test 33), with
+hyperparameters selected on **cal** (never on test):
 
-| on the same 33-row held-out test | accuracy | ECE | Brier |
+| on the 33-row held-out test | accuracy | ECE | Brier |
 |---|---|---|---|
 | base zero-shot | 0.61 | 0.13 | 0.22 |
-| LoRA 1 epoch | 0.73 | 0.11 | 0.15 |
-| LoRA 3 epochs | **0.82** | 0.15 | 0.14 |
+| LoRA, tuned (5 epochs, LoRA rank 16) | **0.88** | 0.10 | 0.08 |
 
 The calibrator is fit on the held-out **cal** set (not train), so its guarantee holds
-out-of-sample: at target risk 0.2 it accepts 88 % of the test set with accepted error
-0.14. Caveat: 33 test rows carry ~±8 % noise, so the trustworthy signal is the same-split
-base→trained delta (+21 pts) and the restored calibration guarantee, not the absolute
-number. This reverses an earlier result on a smaller set (97 rows, a 20-row test, and a
-train-fit calibrator), where training *hurt* — too little data plus a noisy test plus a
-calibrator fit on memorized train data. Fixing all three flips it. The lesson holds:
-specialization needs enough rows and an honest held-out calibration split; grow the pack
-further for a more robust number.
+out-of-sample: at target risk 0.2 it accepts 97 % of the test set with accepted error
+0.09. The winning recipe (`--epochs 5`, with the default LoRA rank 16, calibrator on
+`*_cal.jsonl`) beat more epochs (8), higher rank (32), and retraining on train+cal — so
+for this pack size, train-only plus a cal-fit calibrator is the ceiling. Caveat: 33 test rows carry ~±8 %
+noise and the recipe was picked on a 22-row cal set, so treat 0.88 as "best cleanly
+measured here," not a population estimate; grow the pack for a tighter number. This
+reverses an earlier 97-row result (training *hurt*: too little data + a 20-row test + a
+train-fit calibrator); fixing all three flips it.
 
 **Training cost — the base is DeBERTa-v3-large, whose disentangled attention is
 memory-heavy** (take note before you scale up):
@@ -107,7 +107,7 @@ Specialize, calibrate, evaluate, serve:
 
 ```sh
 python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15   # train / cal / held-out test
-python -m haruspex.train     --train data/security_train.jsonl --out runs/sec
+python -m haruspex.train     --train data/security_train.jsonl --out runs/sec --epochs 5
 # real-scale / long rows on a 12 GB GPU: add memory flags
 # python -m haruspex.train   --train data/security_train.jsonl --out runs/sec \
 #     --batch 2 --grad-accum 4 --grad-checkpoint --max-len 192
@@ -185,9 +185,9 @@ Load it back with `Haruspex.load("<you>/haruspex", device="cuda")`.
 Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end, and a real
 train→held-out-eval cycle on a 12 GB RTX 3060 shows a genuine (if partial) gain on
 general data — see [Measured](#measured-rtx-3060-12-gb-wsl2). On the 157-row security pack,
-specialization now **helps** (base 0.61 → LoRA 0.82 on the same held-out split, with the
-calibration guarantee holding); no trained checkpoint is published yet pending a larger,
-more robust evaluation. Known limits, all noted there or in code:
+tuned specialization **helps** (base 0.61 → LoRA 0.88 on the held-out split, recipe
+selected on cal; calibration guarantee holds); no trained checkpoint is published yet
+pending a larger, more robust evaluation. Known limits, all noted there or in code:
 a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
 memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* (beyond
 abstention) wait on a gliner2 per-label-score fix. Contributions and independent
