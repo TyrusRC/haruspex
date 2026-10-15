@@ -75,6 +75,16 @@ still carry noise and the recipe was chosen on a 70-row cal set, so treat 0.88 a
 cleanly measured here," not a population estimate. See the comparison card in
 [`docs/benchmark.md`](docs/benchmark.md).
 
+*False-positive reduction (security goal).* A hard-negative extension (→ **509 rows**:
+patched/out-of-range CVEs, benign-but-noisy alerts, non-chainable lows) pushed the
+boolean positive class to **recall 1.0** and **precision 0.86** on a harder, negative-heavy
+held-out split. Key finding: threshold/abstention does **not** cut the residual false
+positives, because they are *confident* (P≈1.0) and confined almost entirely to
+`off_cve_applicable` — fine-grained CVE version/OS applicability is a knowledge-lookup task
+(KEV/NVD), not something a 0.5B encoder reliably learns from a few dozen examples. The
+honest fix is to route CVE-applicability to a lookup and reserve the model for judgment
+decisions (triage, severity, routing, verdict), where it leads even a prompted 8B.
+
 *On building the pack:* the rows are hand-authored and Claude-authored (Claude acting as
 a strong teacher that labels its own scenarios). Distillation from a small local teacher
 (Llama-3.1-8B) was tried and **discarded** — its labels on security judgment were too
@@ -134,7 +144,7 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 ## Security decision dataset
 
-`data/security.jsonl` is the curated dataset — 460 clean, labeled decisions spanning both
+`data/security.jsonl` is the curated dataset — 509 clean, labeled decisions spanning both
 sides of security work, across all three decision types (boolean / choice / score) and
 14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
 is general; point it at your own decisions too.
