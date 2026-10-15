@@ -51,3 +51,26 @@ is knowledge-heavy and favors the larger model; add more CVE rows to close it.
   but costs ~16× the parameters.
 - Reproduce: `scripts/split_data.py ... && python -m haruspex.train --epochs 8` then the
   benchmark harness. Numbers are a single run on an RTX 3060 (12 GB).
+
+## Real-world test — owasp-lab source adjudication
+
+Fed 12 real vulnerabilities from a Flask OWASP Top-10 lab (`jozeta/owasp-lab`) to Haruspex
+as raw **code observations** (the analyst/scanner surfaces the candidate; Haruspex adjudicates):
+
+- **Vulnerability class: 12/12 correct** — including 3 mitigated-looking traps it was *not*
+  fooled by (SSTI behind a keyword blocklist, a `..`-filtered-but-absolute-path traversal,
+  and an SSRF host blocklist).
+- **Severity: mostly right** (SQLi/SSTI/pickle/SSRF → critical; traversal/order-by → high).
+- **"Is this a real finding?"** Out of the box this missed bare code observations (it is
+  trained on "scanner flagged … confirmed" phrasing). Adding ~50 **code-observation**
+  adjudication rows (genuinely-vulnerable vs genuinely-safe code) lifted it to **10/12
+  flagged** while correctly rejecting **3/3 safe-code controls** (parameterized SQL,
+  `safe_join`, bcrypt) — i.e. no false positives on safe code.
+- **Residual:** 2 confident false negatives (blind command injection with discarded output;
+  MD5 password storage). Pushing more data past this point traded a false negative for a
+  false positive on safe code — the ~0.5B adjudication head's capacity limit on a nuanced
+  binary judgment from free-text code.
+
+**Takeaway:** Haruspex is an **adjudication layer**, strongest on class + severity. Feed it
+*verified* observations (as the verify→assess pipeline does) and it is accurate; it is not a
+from-scratch SAST scanner on raw code.

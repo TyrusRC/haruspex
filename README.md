@@ -75,7 +75,7 @@ still carry noise and the recipe was chosen on a 70-row cal set, so treat 0.88 a
 cleanly measured here," not a population estimate. See the comparison card in
 [`docs/benchmark.md`](docs/benchmark.md).
 
-*False-positive reduction (security goal).* The pack grew to **601 rows** (hard negatives +
+*False-positive reduction (security goal).* The pack grew to **653 rows** (hard negatives +
 agent-authored judgment cases). Two changes drove false positives toward zero on a 120-row
 held-out split:
 
@@ -155,7 +155,7 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 ## Security decision dataset
 
-`data/security.jsonl` is the curated dataset — 601 clean, labeled decisions spanning both
+`data/security.jsonl` is the curated dataset — 653 clean, labeled decisions spanning both
 sides of security work, across all three decision types (boolean / choice / score) and
 14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
 is general; point it at your own decisions too.
