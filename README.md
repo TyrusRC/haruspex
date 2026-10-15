@@ -75,15 +75,26 @@ still carry noise and the recipe was chosen on a 70-row cal set, so treat 0.88 a
 cleanly measured here," not a population estimate. See the comparison card in
 [`docs/benchmark.md`](docs/benchmark.md).
 
-*False-positive reduction (security goal).* A hard-negative extension (→ **509 rows**:
-patched/out-of-range CVEs, benign-but-noisy alerts, non-chainable lows) pushed the
-boolean positive class to **recall 1.0** and **precision 0.86** on a harder, negative-heavy
-held-out split. Key finding: threshold/abstention does **not** cut the residual false
-positives, because they are *confident* (P≈1.0) and confined almost entirely to
-`off_cve_applicable` — fine-grained CVE version/OS applicability is a knowledge-lookup task
-(KEV/NVD), not something a 0.5B encoder reliably learns from a few dozen examples. The
-honest fix is to route CVE-applicability to a lookup and reserve the model for judgment
-decisions (triage, severity, routing, verdict), where it leads even a prompted 8B.
+*False-positive reduction (security goal).* The pack grew to **601 rows** (hard negatives +
+agent-authored judgment cases). Two changes drove false positives toward zero on a 120-row
+held-out split:
+
+1. **Hard negatives** (patched/out-of-range CVEs, benign-but-noisy alerts, non-chainable
+   lows) lifted the actionable ("yes") class to **precision 0.97 / recall 0.94**.
+2. **CVE-applicability routing** (`haruspex/cve.py`). The residual false positives were
+   *confident* (P≈1.0) and confined to `off_cve_applicable` — fine-grained CVE version/OS
+   logic a 0.5B encoder won't learn and an abstention threshold can't catch. Those questions
+   now route to a deterministic resolver that answers only when confident and otherwise
+   **defers** (abstain → external KEV/NVD lookup). On the held-out set it answered CVE
+   applicability at **100 % accuracy (0 wrong)**, deferring the rest — so the model emits
+   **no** CVE false positives. `CveResolver` is pluggable (inject praetor's `lookup_cve`);
+   the safety property is defer-on-uncertainty, so a coverage gap causes an abstention, never
+   a false positive (unit-tested in `tests/test_cve.py`).
+
+Net on the 120-row test: selective coverage 0.96, accepted accuracy 0.90, boolean precision
+0.97, CVE false positives 0. The model is reserved for judgment (triage/severity/routing/
+verdict), where it leads even a prompted 8B; the residual soft spot is 4-way ordinal scoring
+(`off_severity`), an ordinal-accuracy limit, not a false-positive one.
 
 *On building the pack:* the rows are hand-authored and Claude-authored (Claude acting as
 a strong teacher that labels its own scenarios). Distillation from a small local teacher
@@ -144,7 +155,7 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 ## Security decision dataset
 
-`data/security.jsonl` is the curated dataset — 509 clean, labeled decisions spanning both
+`data/security.jsonl` is the curated dataset — 601 clean, labeled decisions spanning both
 sides of security work, across all three decision types (boolean / choice / score) and
 14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
 is general; point it at your own decisions too.

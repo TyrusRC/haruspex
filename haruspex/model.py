@@ -20,9 +20,12 @@ from .data import decision_text, label_map
 
 
 class Haruspex:
-    def __init__(self, model, calibrator=None):
+    def __init__(self, model, calibrator=None, cve_resolver=None, route_cve=True):
         self.model = model
         self.calibrator = calibrator
+        # CVE applicability is a knowledge lookup, not a model judgment — route it.
+        self.cve_resolver = cve_resolver
+        self.route_cve = route_cve
 
     @classmethod
     def load(cls, path: str = "", device: str = "cpu", calibrator=None) -> "Haruspex":
@@ -51,7 +54,8 @@ class Haruspex:
             if cal.exists():
                 from .calibrate import SelectiveCalibrator
                 calibrator = SelectiveCalibrator.load(cal)
-        return cls(model, calibrator)
+        from .cve import CveResolver
+        return cls(model, calibrator, cve_resolver=CveResolver.from_dir(model_id))
 
     def _classify(self, row: dict) -> tuple[str, float]:
         """Top label + its confidence for one decision row.
@@ -73,6 +77,21 @@ class Haruspex:
         t = (row.get("type") or "boolean").lower()
         if t == "noul":
             t = "boolean"
+        # Route CVE-applicability to the deterministic resolver (defer if unsure).
+        if self.route_cve and t == "boolean" and self.cve_resolver is not None:
+            from .cve import extract_cve, is_applicability
+            if is_applicability(row):
+                cve = extract_cve(f"{row.get('question','')} {row.get('state','')}")
+                ans = self.cve_resolver.resolve(cve, str(row.get("state", "")))
+                if ans is not None:
+                    return {"type": "boolean", "label": "yes" if ans else "no",
+                            "probability": 1.0 if ans else 0.0, "confidence": 1.0,
+                            "source": "cve_lookup", "cve": cve,
+                            "accept": True, "abstain": False}
+                return {"type": "boolean", "label": None, "probability": None,
+                        "confidence": 0.0, "source": "model_declined", "cve": cve,
+                        "route": "external_cve_lookup", "accept": False, "abstain": True,
+                        "reason": "CVE applicability is resolved by a KEV/NVD lookup, not the model"}
         label, conf = self._classify(row)
         if t == "boolean":
             p_yes = conf if label == "yes" else 1.0 - conf
