@@ -55,25 +55,25 @@ selective layer at target risk 0.1 then accepts only the most-confident ~2.5 % w
 fuller train.
 
 **Security held-out — with enough data, specialization helps.** `data/security.jsonl` is
-430 clean rows. On a stratified 3-way split (train 280 / cal 65 / test 85), with
+460 clean rows. On a stratified 3-way split (train 299 / cal 70 / test 91), with
 hyperparameters selected on **cal** (never on test):
 
-| on the 85-row held-out test | accuracy | ECE | Brier |
+| on the 91-row held-out test | accuracy | ECE | Brier |
 |---|---|---|---|
-| base zero-shot | 0.53 | 0.12 | 0.23 |
-| LoRA, tuned (8 epochs, LoRA rank 16) | **0.84** | 0.16 | 0.16 |
+| base GLiNER2.5-Decide (zero-shot) | 0.60 | 0.12 | 0.23 |
+| Llama-3.1-8B-Instruct (prompted) | 0.70 | — | — |
+| **Haruspex** LoRA, tuned (8 epochs, rank 16) | **0.88** | 0.12 | 0.12 |
 
 The calibrator is fit on the held-out **cal** set (not train), so its guarantee holds
-out-of-sample: at target risk 0.2 the adapter accepts 96 % of the test set with accepted
-error 0.15. The base scores only ~0.5 here because the test leans on harder items (CVE
-version-range reasoning, verdict discipline) that a general encoder gets wrong; the tuned
-adapter reaches 0.84 on a test nearly 3× larger than the first security pack, so the
-number is more trustworthy than earlier, smaller-test figures. Larger sets need more
-epochs — at 430 rows, 8 epochs beat 5 (which underfit); rank 16 beat rank 32. Caveat: 85
-test rows still carry noise and the recipe was chosen on a 65-row cal set, so treat 0.84
-as "best cleanly measured here," not a population estimate. Hand/Claude-authored data at
-this scale plateaus near here — a second authoring batch grew the pack and the test but
-did not lift accuracy.
+out-of-sample: at target risk 0.2 the adapter accepts the whole test set at accepted
+error 0.12. The headline: a ~494M specialized adapter **beats a prompted 8B general model
+(0.88 vs 0.70) at ~1/16 the size** and comparable latency, and lifts the base encoder from
+0.60. Larger sets need more epochs — at this size 8 epochs beat 5 (which underfit); rank
+16 beat rank 32. Per-category, the adapter leads on severity/triage/routing/verdict; the
+8B still edges it on CVE-version-range reasoning (knowledge-heavy). Caveat: 91 test rows
+still carry noise and the recipe was chosen on a 70-row cal set, so treat 0.88 as "best
+cleanly measured here," not a population estimate. See the comparison card in
+[`docs/benchmark.md`](docs/benchmark.md).
 
 *On building the pack:* the rows are hand-authored and Claude-authored (Claude acting as
 a strong teacher that labels its own scenarios). Distillation from a small local teacher
@@ -134,7 +134,7 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 ## Security decision dataset
 
-`data/security.jsonl` is the curated dataset — 430 clean, labeled decisions spanning both
+`data/security.jsonl` is the curated dataset — 460 clean, labeled decisions spanning both
 sides of security work, across all three decision types (boolean / choice / score) and
 14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
 is general; point it at your own decisions too.
@@ -192,8 +192,8 @@ Load it back with `Haruspex.load("<you>/haruspex", device="cuda")`.
 
 Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end, and a real
 train→held-out-eval cycle on a 12 GB RTX 3060 shows a genuine (if partial) gain on
-general data — see [Measured](#measured-rtx-3060-12-gb-wsl2). On the 430-row security pack,
-tuned specialization **helps** (base 0.53 → LoRA 0.84 on an 85-row held-out split, recipe
+general data — see [Measured](#measured-rtx-3060-12-gb-wsl2). On the 460-row security pack,
+tuned specialization **helps** (base 0.60 → LoRA 0.88 on a 91-row held-out split, beating a prompted 8B at 0.70, recipe
 selected on cal; calibration guarantee holds); no trained checkpoint is published yet
 pending the operator's go. Known limits, all noted there or in code:
 a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
