@@ -9,15 +9,27 @@ _TEMPLATE = """---
 license: apache-2.0
 library_name: gliner2
 pipeline_tag: text-classification
+language:
+  - en
 tags:
   - decision-model
   - calibration
   - selective-prediction
+  - conformal-prediction
+  - abstention
+  - risk-aware
   - security
-  - pentest
+  - cybersecurity
+  - security-operations
   - soc
+  - pentest
+  - red-team
+  - blue-team
+  - gliner2
 base_model: {base}
----
+metrics:
+  - accuracy
+{model_index}---
 
 # {repo}
 
@@ -91,6 +103,50 @@ def _base_model(model_dir: Path) -> str:
     return "fastino/GLiNER2.5-Decide"
 
 
+def _eval_blocks(model_dir: Path, repo: str):
+    """Return (model_index_yaml, eval_section_md) from an optional eval.json."""
+    ef = model_dir / "eval.json"
+    if not ef.exists():
+        return "", ""
+    try:
+        e = json.loads(ef.read_text())
+    except (ValueError, OSError):
+        return "", ""
+    name = repo.split("/")[-1]
+    ds = e.get("dataset", "security held-out")
+    n = e.get("test_n")
+    acc = e.get("accuracy")
+    mlines = [f"            value: {acc}", "            name: accuracy"]
+    mi = (
+        "model-index:\n"
+        f"  - name: {name}\n"
+        "    results:\n"
+        "      - task:\n"
+        "          type: text-classification\n"
+        "          name: Security decision (boolean / choice / score)\n"
+        "        dataset:\n"
+        "          type: custom\n"
+        f"          name: {ds}" + (f" ({n} rows)" if n else "") + "\n"
+        "        metrics:\n"
+        "          - type: accuracy\n" + "\n".join(mlines) + "\n"
+    )
+    extra = "".join(
+        f"          - type: {k}\n            value: {e[k]}\n            name: {k.upper()}\n"
+        for k in ("ece", "brier") if k in e
+    )
+    mi += extra
+    sec = (f"\n\n## Evaluation\n\nOn a {n}-row held-out split of the security pack "
+           f"(recipe selected on a separate calibration split, never on test): "
+           f"**accuracy {acc}**")
+    if "ece" in e:
+        sec += f", ECE {e['ece']}"
+    if "brier" in e:
+        sec += f", Brier {e['brier']}"
+    sec += (". The adapter beats a prompted general 8B model on the same set at a small "
+            "fraction of the parameters; see the repo's `docs/benchmark.md` comparison card.")
+    return mi, sec
+
+
 def build_card(model_dir: str | Path, repo: str) -> str:
     model_dir = Path(model_dir)
     base = _base_model(model_dir)
@@ -104,9 +160,10 @@ def build_card(model_dir: str | Path, repo: str) -> str:
                    f"(n={c.get('n')}).")
         except (ValueError, OSError):
             pass
-    return _TEMPLATE.format(repo=repo, base=base,
+    model_index, eval_section = _eval_blocks(model_dir, repo)
+    return _TEMPLATE.format(repo=repo, base=base, model_index=model_index,
                             base_url="https://huggingface.co/fastino/GLiNER2.5-Decide",
-                            cal=cal)
+                            cal=cal + eval_section)
 
 
 def write_card(model_dir: str | Path, repo: str) -> Path:
