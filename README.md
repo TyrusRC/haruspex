@@ -55,23 +55,29 @@ selective layer at target risk 0.1 then accepts only the most-confident ~2.5 % w
 fuller train.
 
 **Security held-out — with enough data, specialization helps.** `data/security.jsonl` is
-157 clean rows. On a stratified 3-way split (train 102 / cal 22 / test 33), with
+293 clean rows. On a stratified 3-way split (train 189 / cal 46 / test 58), with
 hyperparameters selected on **cal** (never on test):
 
-| on the 33-row held-out test | accuracy | ECE | Brier |
+| on the 58-row held-out test | accuracy | ECE | Brier |
 |---|---|---|---|
-| base zero-shot | 0.61 | 0.13 | 0.22 |
-| LoRA, tuned (5 epochs, LoRA rank 16) | **0.88** | 0.10 | 0.08 |
+| base zero-shot | 0.50 | 0.17 | 0.23 |
+| LoRA, tuned (5 epochs, LoRA rank 16) | **0.86** | 0.14 | 0.14 |
 
 The calibrator is fit on the held-out **cal** set (not train), so its guarantee holds
-out-of-sample: at target risk 0.2 it accepts 97 % of the test set with accepted error
-0.09. The winning recipe (`--epochs 5`, with the default LoRA rank 16, calibrator on
-`*_cal.jsonl`) beat more epochs (8), higher rank (32), and retraining on train+cal — so
-for this pack size, train-only plus a cal-fit calibrator is the ceiling. Caveat: 33 test rows carry ~±8 %
-noise and the recipe was picked on a 22-row cal set, so treat 0.88 as "best cleanly
-measured here," not a population estimate; grow the pack for a tighter number. This
-reverses an earlier 97-row result (training *hurt*: too little data + a 20-row test + a
-train-fit calibrator); fixing all three flips it.
+out-of-sample: at target risk 0.2 the accepted error is 0.14. The base scores only 0.50
+here because the test leans on harder items (CVE version-range reasoning, verdict
+discipline) that a general encoder gets wrong; the tuned adapter reaches 0.86 — a +36-pt
+gain on a test nearly 2× larger than the earlier pack, so the number is more trustworthy.
+The winning recipe (`--epochs 5`, default LoRA rank 16, calibrator on `*_cal.jsonl`) beat
+more epochs, higher rank, and train+cal retraining at the smaller size. Caveat: 58 test
+rows still carry noise and the recipe was picked on a 46-row cal set, so treat 0.86 as
+"best cleanly measured here," not a population estimate.
+
+*On building the pack:* the rows are hand-authored and Claude-authored (Claude acting as
+a strong teacher that labels its own scenarios). Distillation from a small local teacher
+(Llama-3.1-8B) was tried and **discarded** — its labels on security judgment were too
+noisy and *lowered* held-out accuracy; curation fixes label distribution, not per-row
+correctness. For this task, a strong teacher's label quality is what matters.
 
 **Training cost — the base is DeBERTa-v3-large, whose disentangled attention is
 memory-heavy** (take note before you scale up):
@@ -126,7 +132,7 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 ## Security decision dataset
 
-`data/security.jsonl` is the curated dataset — 157 clean, labeled decisions spanning both
+`data/security.jsonl` is the curated dataset — 293 clean, labeled decisions spanning both
 sides of security work, across all three decision types (boolean / choice / score) and
 14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
 is general; point it at your own decisions too.
@@ -184,10 +190,10 @@ Load it back with `Haruspex.load("<you>/haruspex", device="cuda")`.
 
 Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end, and a real
 train→held-out-eval cycle on a 12 GB RTX 3060 shows a genuine (if partial) gain on
-general data — see [Measured](#measured-rtx-3060-12-gb-wsl2). On the 157-row security pack,
-tuned specialization **helps** (base 0.61 → LoRA 0.88 on the held-out split, recipe
+general data — see [Measured](#measured-rtx-3060-12-gb-wsl2). On the 293-row security pack,
+tuned specialization **helps** (base 0.50 → LoRA 0.86 on a 58-row held-out split, recipe
 selected on cal; calibration guarantee holds); no trained checkpoint is published yet
-pending a larger, more robust evaluation. Known limits, all noted there or in code:
+pending the operator's go. Known limits, all noted there or in code:
 a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
 memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* (beyond
 abstention) wait on a gliner2 per-label-score fix. Contributions and independent
