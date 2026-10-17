@@ -15,10 +15,14 @@ data/*.jsonl
 !data/seed.jsonl
 !data/security_seed.jsonl
 !data/security.jsonl
+!data/mobile.jsonl
 # derived splits (regenerate with scripts/split_data.py) stay ignored:
 data/security_train.jsonl
 data/security_test.jsonl
 data/security_cal.jsonl
+data/mobile_train.jsonl
+data/mobile_test.jsonl
+data/mobile_cal.jsonl
 
 # OS / editor
 .DS_Store

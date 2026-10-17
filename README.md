@@ -243,6 +243,22 @@ live pentest A/B on an all-vulnerable, zero-noise lab API showed **no** differen
 on noise/false-positives/irrelevance being present**, i.e. a real scanner's raw output,
 which is exactly where it plugs in.
 
+## Per-domain adapters
+
+One ~0.5B model cannot hold every security domain at once — merging a small mobile pack
+into the web/SOC set destabilized training (it collapsed or ignored the new domain). The
+architecture is therefore **one shared base + a LoRA adapter per domain**, each served at
+its own endpoint and pointed to by that tool.
+
+`data/mobile.jsonl` (203 rows, MASVS-aligned Android/iOS) trains a **dedicated mobile
+adapter**: on its held-out split it scores **accuracy 0.98, recall 1.00** (no missed
+findings) and cleanly separates real findings (hardcoded secret, debuggable, exported
+component, ATS-off, WebView bridge → ~1.0) from hardened ones (Keystore, `exported=false`,
+EncryptedSharedPreferences → ~0.0) — concepts the shared model could not learn. A mobile
+scanner (e.g. centurion) points its `*_HARUSPEX_URL` at the mobile adapter's endpoint; web
+tools point at the web model. (Note: the post-train sanity-gate's probe is web-specific —
+pass domain probes or `--no-sanity-gate` when training a non-web adapter.)
+
 ## Status
 
 Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end, and a real
