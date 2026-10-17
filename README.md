@@ -75,7 +75,7 @@ still carry noise and the recipe was chosen on a 70-row cal set, so treat 0.88 a
 cleanly measured here," not a population estimate. See the comparison card in
 [`docs/benchmark.md`](docs/benchmark.md).
 
-*False-positive reduction (security goal).* The pack grew to **653 rows** (hard negatives +
+*False-positive reduction (security goal).* The pack grew to **665 rows** (hard negatives +
 agent-authored judgment cases). Two changes drove false positives toward zero on a 120-row
 held-out split:
 
@@ -155,7 +155,7 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 ## Security decision dataset
 
-`data/security.jsonl` is the curated dataset — 653 clean, labeled decisions spanning both
+`data/security.jsonl` is the curated dataset — 665 clean, labeled decisions spanning both
 sides of security work, across all three decision types (boolean / choice / score) and
 14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
 is general; point it at your own decisions too.
@@ -208,6 +208,37 @@ python scripts/publish_hf.py --model runs/sec --repo <you>/haruspex
 ```
 
 Load it back with `Haruspex.load("<you>/haruspex", device="cuda")`.
+
+## Integrating Haruspex into a scanner (the useful flow)
+
+Haruspex is a **native, standalone** decision layer — point any tool at `/v1/evaluate`
+(keyless, loopback) or call `Haruspex.decide()` in-process. It does **not** depend on
+praetor.
+
+**Where it earns its place — finding triage / adjudication**, run as a **fail-open**
+pass *after* a tool has produced (and ideally verified) candidates:
+
+- the tool asks, per candidate, "is this a real, reportable finding?" with the
+  **verified evidence** in the state, plus a severity score;
+- Haruspex **annotates and re-ranks** — raises confidence on confirmed bugs, sinks
+  noise (missing headers, version banners, `OPTIONS`/`TRACE`, empty dir-listings),
+  withholds "confirmed" on a mere indicator (an error/reflection is a *lead*, not a
+  finding);
+- **it never removes a candidate.** A "no"/abstain means "not proven yet — keep
+  hunting", never "drop it". Haruspex may block an *unproven report*, never a *lead*.
+  A missed finding is the cardinal harm, so Haruspex is wired only at the report/triage
+  stage — **never** at lead/probe selection or any truncation gate.
+
+**Do not** use it to prioritize *which* targets/classes to probe: boolean "worth
+testing?" saturates when everything is relevant, and the relevance signal is
+phrasing-sensitive. Triage and severity are the reliable, discriminating heads.
+
+Measured on a mixed probe set (real bugs vs noise vs safe code vs mere indicators) the
+triage head separates cleanly (real → `yes`≈1.0; noise/safe/indicator → `no`≈0.0). A
+live pentest A/B on an all-vulnerable, zero-noise lab API showed **no** differentiation
+(nothing to rank or suppress) and a small latency cost — Haruspex's value is **conditional
+on noise/false-positives/irrelevance being present**, i.e. a real scanner's raw output,
+which is exactly where it plugs in.
 
 ## Status
 
