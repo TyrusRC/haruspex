@@ -98,6 +98,30 @@ _DOMAIN_PROBES = {
                 "Content provider sets android:exported=false with no intent filter",
                 "The app sets minSdkVersion 24"],
     },
+    "cloud": {
+        "real": ["Terraform aws_s3_bucket_public_access_block sets block_public_acls=false and the bucket policy grants Principal \"*\" s3:GetObject",
+                 "IAM policy document allows Action \"*\" on Resource \"*\"",
+                 "Security group ingress allows 0.0.0.0/0 to port 22"],
+        "neg": ["aws_s3_bucket_public_access_block sets all four public-access settings to true",
+                "IAM policy scoped to s3:GetObject on one bucket ARN",
+                "Security group ingress allows TCP 443 from a single corporate CIDR"],
+    },
+    "network": {
+        "real": ["netexec smb shows signing:False on the domain controller, so NTLM relay is possible",
+                 "A service account has an SPN and Kerberoasts with an RC4 hash that cracks offline",
+                 "LLMNR and NBT-NS are enabled on the subnet, allowing NTLMv2 capture via responder"],
+        "neg": ["netexec smb shows signing:True required on all hosts",
+                "Kerberos pre-authentication is required and the service account uses a long AES-only password",
+                "LDAP channel binding and signing are enforced"],
+    },
+    "llm": {
+        "real": ["A prompt injection made the model ignore its system prompt and print its hidden instructions",
+                 "The model output is passed unsanitized into eval(), so attacker input runs as code",
+                 "A jailbreak via base64 made the model return disallowed content"],
+        "neg": ["The model refused the jailbreak and stayed on task",
+                "The model echoed a benign greeting with no security impact",
+                "A tool call is gated behind an explicit user confirmation"],
+    },
 }
 
 

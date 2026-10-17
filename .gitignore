@@ -16,6 +16,9 @@ data/*.jsonl
 !data/security_seed.jsonl
 !data/security.jsonl
 !data/mobile.jsonl
+!data/cloud.jsonl
+!data/network.jsonl
+!data/llm.jsonl
 # derived splits (regenerate with scripts/split_data.py) stay ignored:
 data/security_train.jsonl
 data/security_test.jsonl
@@ -23,6 +26,15 @@ data/security_cal.jsonl
 data/mobile_train.jsonl
 data/mobile_test.jsonl
 data/mobile_cal.jsonl
+data/cloud_train.jsonl
+data/cloud_test.jsonl
+data/cloud_cal.jsonl
+data/network_train.jsonl
+data/network_test.jsonl
+data/network_cal.jsonl
+data/llm_train.jsonl
+data/llm_test.jsonl
+data/llm_cal.jsonl
 
 # OS / editor
 .DS_Store

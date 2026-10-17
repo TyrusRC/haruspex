@@ -40,6 +40,15 @@ _DOMAIN_HINTS: dict[str, tuple[str, ...]] = {
                "strings.xml", "info.plist", "keystore", "webview", "deeplink", "deep link",
                "frida", "smali", ".dex", "minsdk", "sharedpreferences", "app transport security",
                " ats ", ".ipa", "objective-c", "intent filter", "content provider", "ios app"),
+    "cloud": ("terraform", "cloudformation", "aws_s3", "s3 bucket", "iam policy", "iam role",
+              "security group", "0.0.0.0/0", "publicly_accessible", "boto3", "kms key",
+              "cloudtrail", "assume role", "arn:aws", "akia", "block_public_acls", "lambda function",
+              "bucket policy", "ec2 instance"),
+    "network": ("smb signing", "kerberos", "kerberoast", "as-rep", "netexec", "impacket",
+                "bloodhound", "active directory", "domain controller", "ldap bind", "spn",
+                "delegation", "llmnr", "nbt-ns", "sysvol", "dcsync", "adcs", "certipy", "ntlm relay"),
+    "llm": ("prompt injection", "jailbreak", "system prompt", "llm", "rag ", "excessive agency",
+            "prompt leak", "guardrail", "indirect prompt", "system-prompt"),
 }
 
 

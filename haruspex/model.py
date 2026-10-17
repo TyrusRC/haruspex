@@ -28,13 +28,17 @@ class Haruspex:
         self.route_cve = route_cve
 
     @classmethod
-    def load(cls, path: str = "", device: str = "cpu", calibrator=None,
+    def load(cls, path: str = "", device: str = "", calibrator=None,
              subfolder: str = "") -> "Haruspex":
         """Load a GLiNER2.5-Decide base, or a Haruspex adapter artifact (a dir with
         `haruspex.json`: the reused base + a LoRA adapter reattached at inference).
         `path` is a local dir or an HF repo id; `subfolder` selects one adapter inside
         a multi-domain repo (e.g. load("TyrusRC/haruspex", subfolder="mobile")). A
-        sibling `calibrator.json` and CVE data are picked up from the same dir."""
+        sibling `calibrator.json` and CVE data are picked up from the same dir.
+        `device` defaults to the best available (GPU first); pass "cpu" to force CPU."""
+        if not device:
+            from .config import pick_device
+            device = pick_device()
         model_id = resolve_model(path)
         root, passthrough = cls._resolve_dir(model_id, subfolder)
         if passthrough:
