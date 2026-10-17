@@ -20,12 +20,17 @@ from .data import decision_text, label_map
 
 
 class Haruspex:
-    def __init__(self, model, calibrator=None, cve_resolver=None, route_cve=True):
+    def __init__(self, model, calibrator=None, cve_resolver=None, route_cve=True,
+                 cloud_resolver=None, route_cloud=True):
         self.model = model
         self.calibrator = calibrator
         # CVE applicability is a knowledge lookup, not a model judgment — route it.
         self.cve_resolver = cve_resolver
         self.route_cve = route_cve
+        # Cloud/IaC scanner findings are a structural fact the scanner already computed;
+        # a 0.5B encoder can't reliably negate polarity on them — route deterministically.
+        self.cloud_resolver = cloud_resolver
+        self.route_cloud = route_cloud
 
     @classmethod
     def load(cls, path: str = "", device: str = "", calibrator=None,
@@ -69,7 +74,9 @@ class Haruspex:
                 from .calibrate import SelectiveCalibrator
                 calibrator = SelectiveCalibrator.load(cal)
         from .cve import CveResolver
-        return cls(model, calibrator, cve_resolver=CveResolver.from_dir(str(root)))
+        from .cloud import CloudResolver
+        return cls(model, calibrator, cve_resolver=CveResolver.from_dir(str(root)),
+                   cloud_resolver=CloudResolver.from_dir(str(root)))
 
     @staticmethod
     def _resolve_dir(model_id: str, subfolder: str = "") -> tuple[Path, bool]:
@@ -129,6 +136,16 @@ class Haruspex:
                         "confidence": 0.0, "source": "model_declined", "cve": cve,
                         "route": "external_cve_lookup", "accept": False, "abstain": True,
                         "reason": "CVE applicability is resolved by a KEV/NVD lookup, not the model"}
+        # Route cloud/IaC scanner findings to the deterministic resolver (defer if unsure).
+        if self.route_cloud and t == "boolean" and self.cloud_resolver is not None:
+            from .cloud import is_cloud_finding
+            if is_cloud_finding(row):
+                ans = self.cloud_resolver.classify(str(row.get("state", "")))
+                if ans is not None:
+                    return {"type": "boolean", "label": "yes" if ans else "no",
+                            "probability": 1.0 if ans else 0.0, "confidence": 1.0,
+                            "source": "cloud_rule", "accept": True, "abstain": False}
+                # unsure -> fall through to the model
         label, conf = self._classify(row)
         if t == "boolean":
             p_yes = conf if label == "yes" else 1.0 - conf
