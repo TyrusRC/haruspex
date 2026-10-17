@@ -21,7 +21,7 @@ from .data import load_rows, to_input_example
 
 def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
           batch_size=4, grad_accum=1, lora_r=16, lora_alpha=32, logging_steps=5,
-          grad_checkpoint=None, max_len=None, seed=0, sanity_gate=True):
+          grad_checkpoint=None, max_len=None, seed=0, sanity_gate=True, gate_domain="web"):
     import torch
     from gliner2 import GLiNER2
     from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
@@ -65,7 +65,7 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
         encoding="utf-8")
     if sanity_gate:
         dev = "cuda" if torch.cuda.is_available() else "cpu"
-        ok, report = sanity_check(out, device=dev)
+        ok, report = sanity_check(out, device=dev, domain=gate_domain)
         print(f"[sanity-gate] {report}", flush=True)
         if not ok:
             raise RuntimeError(
@@ -76,40 +76,63 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
     return out
 
 
-# Fixed discrimination probe. A healthy triage model scores a confirmed finding ~1.0 and
-# clear noise/safe code ~0.0; the collapse failure mode (adding data drives every output
-# to ~0.5) fails the margin check, so the gate refuses to pass off a degenerate checkpoint.
+# Fixed discrimination probes, per domain. A healthy triage model scores a confirmed
+# finding ~1.0 and clear noise/safe ~0.0; the collapse failure mode (training drives every
+# output to ~0.5) fails the margin check, so the gate refuses a degenerate checkpoint.
+# `domain="all"` requires the model to discriminate EVERY domain at once — the gate for an
+# all-in-one model, which is exactly where the collapse shows up.
 _SANITY_Q = {"type": "boolean", "question": "Is this a real, reportable security finding?",
              "criteria": {"true": "a real, exploitable vulnerability", "false": "noise / not reportable alone"}}
-_SANITY_REAL = [
-    "Unauthenticated remote code execution confirmed: os.popen('id') returned uid=0(root)",
-    "SQL injection confirmed: a UNION SELECT returned the database version and bypassed authentication",
-]
-_SANITY_NEG = [
-    "the response is missing the X-Frame-Options header on a page with no sensitive action",
-    "the query uses parameterized bindings: cursor.execute(sql, (user_id,))",
-]
+_DOMAIN_PROBES = {
+    "web": {
+        "real": ["Unauthenticated remote code execution confirmed: os.popen('id') returned uid=0(root)",
+                 "SQL injection confirmed: a UNION SELECT returned the database version and bypassed authentication"],
+        "neg": ["the response is missing the X-Frame-Options header on a page with no sensitive action",
+                "the query uses parameterized bindings: cursor.execute(sql, (user_id,))"],
+    },
+    "mobile": {
+        "real": ["Android app ships an AWS access key AKIA... embedded in res/values/strings.xml inside the APK",
+                 "Release manifest sets android:debuggable=true",
+                 "An Android activity has android:exported=true with no permission; any installed app can launch it"],
+        "neg": ["Android symmetric key generated and held in the AndroidKeystore, never leaves the device",
+                "Content provider sets android:exported=false with no intent filter",
+                "The app sets minSdkVersion 24"],
+    },
+}
 
 
-def sanity_check(model_dir: str, device: str = "cpu"):
-    """Probe a freshly trained model for basic discrimination. Returns (ok, report).
+def _probe_set(domain: str) -> dict:
+    if domain == "all":
+        real, neg = [], []
+        for d in _DOMAIN_PROBES.values():
+            real += d["real"]; neg += d["neg"]
+        return {"real": real, "neg": neg}
+    if domain not in _DOMAIN_PROBES:
+        raise ValueError(f"unknown gate domain {domain!r}; known: {list(_DOMAIN_PROBES)} + 'all'")
+    return _DOMAIN_PROBES[domain]
 
-    Guards the collapse-to-0.5 failure mode: REAL findings must score high, NOISE/SAFE
-    low, with a clear margin. A degenerate model (all ~0.5) fails. No network, a handful
-    of forward passes."""
+
+def sanity_check(model_dir: str, device: str = "cpu", domain: str = "web", probes: dict | None = None):
+    """Probe a freshly trained model for discrimination on a domain. Returns (ok, report).
+
+    `domain` selects a built-in probe set ('web', 'mobile', or 'all' = every domain at
+    once); `probes` ({"real":[...], "neg":[...]}) overrides it with a caller set. Guards the
+    collapse-to-0.5 failure mode: REAL must score high, NOISE/SAFE low, with a clear margin."""
     from .model import Haruspex
+    ps = probes or _probe_set(domain)
     m = Haruspex.load(model_dir, device=device)
 
     def p_yes(state: str) -> float:
         v = m.decide({**_SANITY_Q, "state": state})
         return float(v.get("probability", 0.0) or 0.0)
 
-    real = [p_yes(s) for s in _SANITY_REAL]
-    neg = [p_yes(s) for s in _SANITY_NEG]
+    real = [p_yes(s) for s in ps["real"]]
+    neg = [p_yes(s) for s in ps["neg"]]
     min_real, max_neg = min(real), max(neg)
     margin = (sum(real) / len(real)) - (sum(neg) / len(neg))
     ok = (min_real >= 0.65) and (max_neg <= 0.35) and (margin >= 0.4)
-    return ok, {"ok": ok, "min_real": round(min_real, 3), "max_neg": round(max_neg, 3),
+    return ok, {"ok": ok, "domain": "custom" if probes else domain,
+                "min_real": round(min_real, 3), "max_neg": round(max_neg, 3),
                 "margin": round(margin, 3),
                 "real": [round(x, 3) for x in real], "neg": [round(x, 3) for x in neg]}
 
@@ -130,6 +153,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="training seed (reproducible; retry a collapsed run with a new seed)")
     ap.add_argument("--no-sanity-gate", action="store_true",
                     help="skip the post-train discrimination probe (not recommended)")
+    ap.add_argument("--gate-domain", default="web", help="sanity-gate probe set: web | mobile | all")
     args = ap.parse_args()
 
     from .config import resolve_model
@@ -139,7 +163,7 @@ def main():
     out = train(base, rows, args.out, mode=args.mode, epochs=args.epochs,
                 max_steps=args.max_steps, batch_size=args.batch, grad_accum=args.grad_accum,
                 grad_checkpoint=args.grad_checkpoint or None, max_len=args.max_len or None,
-                seed=args.seed, sanity_gate=not args.no_sanity_gate)
+                seed=args.seed, sanity_gate=not args.no_sanity_gate, gate_domain=args.gate_domain)
     print(f"[train] saved standalone model -> {out}")
     print("[train] fit a calibrator next: python -m haruspex.calibrate "
           f"--model {out} --data <val.jsonl>")
