@@ -136,7 +136,10 @@ Specialize, calibrate, evaluate, serve:
 
 ```sh
 python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15   # train / cal / held-out test
-python -m haruspex.train     --train data/security_train.jsonl --out runs/sec --epochs 8
+python -m haruspex.train     --train data/security_train.jsonl --out runs/sec --epochs 8 --seed 0
+# training is seeded (reproducible; retry a bad run with a new --seed) and ends with a
+# sanity-gate: a fixed discrimination probe that RAISES if the checkpoint collapsed
+# (every output ~0.5) instead of shipping a degenerate model. Override with --no-sanity-gate.
 # real-scale / long rows on a 12 GB GPU: add memory flags
 # python -m haruspex.train   --train data/security_train.jsonl --out runs/sec \
 #     --batch 2 --grad-accum 4 --grad-checkpoint --max-len 192

@@ -21,10 +21,18 @@ from .data import load_rows, to_input_example
 
 def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
           batch_size=4, grad_accum=1, lora_r=16, lora_alpha=32, logging_steps=5,
-          grad_checkpoint=None, max_len=None):
+          grad_checkpoint=None, max_len=None, seed=0, sanity_gate=True):
     import torch
     from gliner2 import GLiNER2
     from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
+
+    # Reproducible training: seed torch/numpy/python up front so a good run can be
+    # reproduced and a bad run retried deterministically with a different seed.
+    try:
+        from transformers import set_seed as _set_seed
+        _set_seed(seed)
+    except Exception:  # noqa: BLE001 - fall back to torch-only seeding
+        torch.manual_seed(seed)
 
     examples = [to_input_example(r) for r in rows]
     cuda = torch.cuda.is_available()
@@ -55,7 +63,55 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
     (Path(out) / "haruspex.json").write_text(
         json.dumps({"base": base, "adapter": "final", "mode": "lora"}, indent=2),
         encoding="utf-8")
+    if sanity_gate:
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        ok, report = sanity_check(out, device=dev)
+        print(f"[sanity-gate] {report}", flush=True)
+        if not ok:
+            raise RuntimeError(
+                "[sanity-gate] the trained model failed the discrimination probe "
+                f"(degenerate / collapsed to ~0.5): {report}. This is NOT a usable "
+                "checkpoint — retry with a different --seed, add/clean data, or adjust "
+                "the recipe. Pass sanity_gate=False / --no-sanity-gate to override.")
     return out
+
+
+# Fixed discrimination probe. A healthy triage model scores a confirmed finding ~1.0 and
+# clear noise/safe code ~0.0; the collapse failure mode (adding data drives every output
+# to ~0.5) fails the margin check, so the gate refuses to pass off a degenerate checkpoint.
+_SANITY_Q = {"type": "boolean", "question": "Is this a real, reportable security finding?",
+             "criteria": {"true": "a real, exploitable vulnerability", "false": "noise / not reportable alone"}}
+_SANITY_REAL = [
+    "Unauthenticated remote code execution confirmed: os.popen('id') returned uid=0(root)",
+    "SQL injection confirmed: a UNION SELECT returned the database version and bypassed authentication",
+]
+_SANITY_NEG = [
+    "the response is missing the X-Frame-Options header on a page with no sensitive action",
+    "the query uses parameterized bindings: cursor.execute(sql, (user_id,))",
+]
+
+
+def sanity_check(model_dir: str, device: str = "cpu"):
+    """Probe a freshly trained model for basic discrimination. Returns (ok, report).
+
+    Guards the collapse-to-0.5 failure mode: REAL findings must score high, NOISE/SAFE
+    low, with a clear margin. A degenerate model (all ~0.5) fails. No network, a handful
+    of forward passes."""
+    from .model import Haruspex
+    m = Haruspex.load(model_dir, device=device)
+
+    def p_yes(state: str) -> float:
+        v = m.decide({**_SANITY_Q, "state": state})
+        return float(v.get("probability", 0.0) or 0.0)
+
+    real = [p_yes(s) for s in _SANITY_REAL]
+    neg = [p_yes(s) for s in _SANITY_NEG]
+    min_real, max_neg = min(real), max(neg)
+    margin = (sum(real) / len(real)) - (sum(neg) / len(neg))
+    ok = (min_real >= 0.65) and (max_neg <= 0.35) and (margin >= 0.4)
+    return ok, {"ok": ok, "min_real": round(min_real, 3), "max_neg": round(max_neg, 3),
+                "margin": round(margin, 3),
+                "real": [round(x, 3) for x in real], "neg": [round(x, 3) for x in neg]}
 
 
 def main():
@@ -71,15 +127,19 @@ def main():
     ap.add_argument("--grad-checkpoint", action="store_true",
                     help="trade compute for memory (needed for long many-option states)")
     ap.add_argument("--max-len", type=int, default=0, help="cap sequence length (0 = model default)")
+    ap.add_argument("--seed", type=int, default=0, help="training seed (reproducible; retry a collapsed run with a new seed)")
+    ap.add_argument("--no-sanity-gate", action="store_true",
+                    help="skip the post-train discrimination probe (not recommended)")
     args = ap.parse_args()
 
     from .config import resolve_model
     base = resolve_model(args.base)
     rows = load_rows(args.train)
-    print(f"[train] base={base} rows={len(rows)} mode={args.mode}")
+    print(f"[train] base={base} rows={len(rows)} mode={args.mode} seed={args.seed}")
     out = train(base, rows, args.out, mode=args.mode, epochs=args.epochs,
                 max_steps=args.max_steps, batch_size=args.batch, grad_accum=args.grad_accum,
-                grad_checkpoint=args.grad_checkpoint or None, max_len=args.max_len or None)
+                grad_checkpoint=args.grad_checkpoint or None, max_len=args.max_len or None,
+                seed=args.seed, sanity_gate=not args.no_sanity_gate)
     print(f"[train] saved standalone model -> {out}")
     print("[train] fit a calibrator next: python -m haruspex.calibrate "
           f"--model {out} --data <val.jsonl>")
