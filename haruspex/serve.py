@@ -38,6 +38,21 @@ import os
 # content should be summarized/truncated by the caller, not sent whole.
 MAX_STATE_CHARS = 65536
 
+# Optional hardening, each off by default (the loopback-trust model stays the default):
+#   HARUSPEX_API_KEY=<secret>     require `Authorization: Bearer <secret>` on /v1/evaluate.
+#                                  Unset = keyless, as today — only turn this on when the
+#                                  server is reachable beyond a single trusted loopback host.
+#   HARUSPEX_AUDIT_LOG=<path>     append one JSONL line per request: timestamp, domain,
+#                                  routing source, and each question's label/probability/
+#                                  source. The raw `state` is NOT logged (it may be
+#                                  sensitive finding/code content) — only its length.
+import collections
+import threading
+import time
+
+_METRICS_LOCK = threading.Lock()
+_METRICS = collections.Counter()
+
 # Keyword signals that infer a domain when a request carries NO explicit `domain`
 # (the "smart switch" fallback). Add a domain here as data, not code. Inference runs
 # ONLY over registered adapters and ONLY when the caller gave no hint — an explicit
@@ -160,6 +175,23 @@ def build_app(adapters: dict[str, str], default: str = "web"):
 
     served_name = os.environ.get("HARUSPEX_SERVED_NAME", "haruspex")
     router = Router(adapters, default=default)
+    api_key = os.environ.get("HARUSPEX_API_KEY", "").strip()
+    audit_path = os.environ.get("HARUSPEX_AUDIT_LOG", "").strip()
+    _audit_lock = threading.Lock()
+
+    def _audit(domain, source, questions, answers, rejected_reason=None):
+        if not audit_path:
+            return
+        rec = {"ts": time.time(), "domain": domain, "domain_source": source,
+               "rejected": rejected_reason,
+               "answers": {name: {k: v for k, v in (a or {}).items()
+                                  if k in ("label", "probability", "source", "error")}
+                          for name, a in answers.items()}}
+        try:
+            with _audit_lock, open(audit_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, default=str) + "\n")
+        except OSError:
+            pass  # audit logging is best-effort; never fail a request over it
 
     async def health(request):
         return JSONResponse({"ok": bool(router._cache), "domains": list(router.adapters),
@@ -170,27 +202,49 @@ def build_app(adapters: dict[str, str], default: str = "web"):
                              "data": [{"id": served_name, "object": "model",
                                        "domains": list(router.adapters)}]})
 
+    async def metrics(request):
+        with _METRICS_LOCK:
+            lines = [f"haruspex_{k} {v}" for k, v in sorted(_METRICS.items())]
+        from starlette.responses import PlainTextResponse
+        return PlainTextResponse("\n".join(lines) + "\n")
+
     async def evaluate(request):
+        if api_key:
+            auth = request.headers.get("authorization", "")
+            if auth != f"Bearer {api_key}":
+                with _METRICS_LOCK:
+                    _METRICS["requests_unauthorized"] += 1
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
         body = await request.json()
         state = body.get("state", "")
         state_len = len(state) if isinstance(state, str) else len(json.dumps(state, default=str))
         questions = body.get("questions") or {}
+        with _METRICS_LOCK:
+            _METRICS["requests_total"] += 1
         if state_len > MAX_STATE_CHARS:
             # Reject before routing/inference touches it — a request this large does not
             # get a domain or a verdict, it gets a clean error for every question asked.
+            with _METRICS_LOCK:
+                _METRICS["requests_rejected_oversized"] += 1
             err = {"error": f"state too large ({state_len} chars > {MAX_STATE_CHARS} limit)"}
+            answers = {name: dict(err) for name in questions}
+            _audit(None, "rejected", questions, answers, rejected_reason="oversized_state")
             return JSONResponse({"model": body.get("model") or served_name,
                                  "domain": None, "domain_source": "rejected",
-                                 "answers": {name: dict(err) for name in questions}},
-                                status_code=413)
+                                 "answers": answers}, status_code=413)
         domain, source = router.route(body.get("domain"), state)
+        with _METRICS_LOCK:
+            _METRICS[f"requests_domain_{domain}"] += 1
         m = router.model(domain)
         answers = {}
         for name, q in questions.items():
             try:
                 answers[name] = m.decide(_question_to_row(state, q))
             except ValueError as e:
+                with _METRICS_LOCK:
+                    _METRICS["requests_errors"] += 1
                 answers[name] = {"error": str(e)}
+        _audit(domain, source, questions, answers)
         return JSONResponse({"model": body.get("model") or served_name,
                              "domain": domain, "domain_source": source, "answers": answers})
 
@@ -198,6 +252,7 @@ def build_app(adapters: dict[str, str], default: str = "web"):
     return Starlette(routes=[
         Route("/health", health, methods=["GET"]),
         Route("/v1/models", models, methods=["GET"]),
+        Route("/metrics", metrics, methods=["GET"]),
         # /v1/evaluate = native Jev shape; /v1/systemone = TypeSafe shape; same contract.
         Route("/v1/evaluate", evaluate, methods=["POST"]),
         Route("/v1/systemone", evaluate, methods=["POST"]),

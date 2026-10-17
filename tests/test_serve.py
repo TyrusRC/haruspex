@@ -137,3 +137,73 @@ class StateSizeGuardTest(unittest.TestCase):
         from haruspex.serve import MAX_STATE_CHARS
         self.assertGreater(MAX_STATE_CHARS, 0)
         self.assertLess(MAX_STATE_CHARS, 1_000_000)  # must stay well under OOM territory
+
+
+class HardeningTest(unittest.TestCase):
+    """API-key auth, /metrics, and audit logging — all opt-in, off by default."""
+
+    def _app(self, **env):
+        import os
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            import haruspex.serve as S
+            orig = S.Router.model
+            S.Router.model = lambda self, domain: self._cache.setdefault(
+                self.resolve(domain), type("M", (), {"decide": staticmethod(
+                    lambda row: {"type": "boolean", "label": "yes", "probability": 1.0})})())
+            try:
+                return S.build_app({"web": "W"}, default="web")
+            finally:
+                S.Router.model = orig
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_keyless_by_default(self):
+        from starlette.testclient import TestClient
+        app = self._app()
+        c = TestClient(app)
+        r = c.post("/v1/evaluate", json={"state": "x", "questions": {"q": {"type": "boolean", "instructions": "i"}}})
+        self.assertEqual(r.status_code, 200)
+
+    def test_api_key_required_when_set(self):
+        from starlette.testclient import TestClient
+        app = self._app(HARUSPEX_API_KEY="s3cr3t")
+        c = TestClient(app)
+        body = {"state": "x", "questions": {"q": {"type": "boolean", "instructions": "i"}}}
+        self.assertEqual(c.post("/v1/evaluate", json=body).status_code, 401)
+        self.assertEqual(c.post("/v1/evaluate", json=body,
+                                headers={"Authorization": "Bearer wrong"}).status_code, 401)
+        self.assertEqual(c.post("/v1/evaluate", json=body,
+                                headers={"Authorization": "Bearer s3cr3t"}).status_code, 200)
+
+    def test_metrics_endpoint(self):
+        from starlette.testclient import TestClient
+        app = self._app()
+        c = TestClient(app)
+        c.post("/v1/evaluate", json={"state": "x", "questions": {"q": {"type": "boolean", "instructions": "i"}}})
+        r = c.get("/metrics")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("haruspex_requests_total", r.text)
+
+    def test_audit_log_written(self):
+        import json as _json
+        import tempfile, os as _os
+        from starlette.testclient import TestClient
+        fd, path = tempfile.mkstemp()
+        _os.close(fd)
+        try:
+            app = self._app(HARUSPEX_AUDIT_LOG=path)
+            c = TestClient(app)
+            c.post("/v1/evaluate", json={"state": "x", "questions": {"q": {"type": "boolean", "instructions": "i"}}})
+            with open(path) as f:
+                lines = [_json.loads(l) for l in f if l.strip()]
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(lines[0]["domain"], "web")
+            self.assertNotIn("state", lines[0])  # raw state must never be logged
+        finally:
+            _os.unlink(path)
