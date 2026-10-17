@@ -188,17 +188,33 @@ own model):
 
 - `POST /v1/evaluate` — native Jev shape.
 - `POST /v1/systemone` — TypeSafe shape (accepts `noul` as boolean).
-- `GET /v1/models` — model list.
+- `GET /v1/models` — model list (lists the served `domains`).
 
 ```
 POST /v1/evaluate  (or /v1/systemone)
-{ "model":"haruspex", "state": <str|obj>,
+{ "model":"haruspex", "state": <str|obj>, "domain": "web"|"mobile"|...,
   "questions": { "<name>": { "type":"boolean"|"noul"|"choice"|"score",
                              "instructions":"...",
                              "criteria": {true,false} | {opt:desc} | [low,high] } } }
 ```
 
 Each answer carries the verdict plus `accept` / `abstain` when a calibrator is loaded.
+The response echoes the `domain` that answered.
+
+**One endpoint, any domain (the router).** Serve several per-domain adapters behind the
+same endpoint and let the request's `domain` field pick the adapter:
+
+```sh
+haruspex-serve --adapters web=runs/web,mobile=runs/mobile --port 3000
+# a request with "domain":"mobile" is answered by the mobile adapter; "web" by the web
+# model; an unknown or missing domain falls back to --default-domain (web) — fail-open,
+# never an error. A single --model server ignores the field and answers from its one model.
+```
+
+The shared base is loaded once *per domain* (gliner2 does not yet expose single-base
+adapter switching), so the router's win over running one server per domain is the single
+endpoint and routing — a mixed-domain caller (e.g. praetor) hits one URL. Each tool sends
+its own domain: a mobile scanner sends `"domain":"mobile"`, web/code tools send `"web"`.
 
 ## Publish to Hugging Face
 
@@ -247,17 +263,21 @@ which is exactly where it plugs in.
 
 One ~0.5B model cannot hold every security domain at once — merging a small mobile pack
 into the web/SOC set destabilized training (it collapsed or ignored the new domain). The
-architecture is therefore **one shared base + a LoRA adapter per domain**, each served at
-its own endpoint and pointed to by that tool.
+architecture is therefore **one shared base + a LoRA adapter per domain**, served either
+behind one routed endpoint (`--adapters web=…,mobile=…`, picked by the request `domain`) or
+one endpoint per domain.
 
 `data/mobile.jsonl` (203 rows, MASVS-aligned Android/iOS) trains a **dedicated mobile
 adapter**: on its held-out split it scores **accuracy 0.98, recall 1.00** (no missed
 findings) and cleanly separates real findings (hardcoded secret, debuggable, exported
 component, ATS-off, WebView bridge → ~1.0) from hardened ones (Keystore, `exported=false`,
-EncryptedSharedPreferences → ~0.0) — concepts the shared model could not learn. A mobile
-scanner (e.g. centurion) points its `*_HARUSPEX_URL` at the mobile adapter's endpoint; web
-tools point at the web model. (Note: the post-train sanity-gate's probe is web-specific —
-pass domain probes or `--no-sanity-gate` when training a non-web adapter.)
+EncryptedSharedPreferences → ~0.0) — concepts the shared model could not learn.
+
+Each tool names its domain: a mobile scanner (e.g. centurion) sends `"domain":"mobile"`,
+web/code tools (assay, mantis, praetor) send `"web"`; a routed server picks the adapter and
+a single-adapter server ignores the hint. (Note: the post-train sanity-gate's probe is
+web-specific — pass `--gate-domain mobile` or `--no-sanity-gate` when training a non-web
+adapter.)
 
 ## Status
 

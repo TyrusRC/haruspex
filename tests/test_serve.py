@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from haruspex.calibrate import SelectiveCalibrator
-from haruspex.serve import _question_to_row
+from haruspex.serve import Router, _parse_adapters, _question_to_row
 
 
 class QuestionMappingTest(unittest.TestCase):
@@ -36,6 +36,33 @@ class QuestionMappingTest(unittest.TestCase):
     def test_state_passthrough(self):
         r = _question_to_row({"a": 1}, {"type": "boolean", "instructions": "q?"})
         self.assertEqual(r["state"], {"a": 1})
+
+
+class RouterTest(unittest.TestCase):
+    def test_parse_adapters(self):
+        self.assertEqual(_parse_adapters("web=a,mobile=b"), {"web": "a", "mobile": "b"})
+        self.assertEqual(_parse_adapters("web=a;mobile=b"), {"web": "a", "mobile": "b"})
+        # a bare path registers as the default domain 'web'
+        self.assertEqual(_parse_adapters("runs/sec"), {"web": "runs/sec"})
+
+    def test_resolve_known_and_default(self):
+        r = Router({"web": "a", "mobile": "b"}, default="web")
+        self.assertEqual(r.resolve("mobile"), "mobile")
+        self.assertEqual(r.resolve("web"), "web")
+        # unknown / missing domain falls back to default (fail-open, never an error)
+        self.assertEqual(r.resolve("cloud"), "web")
+        self.assertEqual(r.resolve(None), "web")
+        self.assertEqual(r.resolve(""), "web")
+
+    def test_default_falls_back_to_first_registered(self):
+        # an unregistered default name must not break routing
+        r = Router({"mobile": "b"}, default="web")
+        self.assertEqual(r.default, "mobile")
+        self.assertEqual(r.resolve("web"), "mobile")
+
+    def test_empty_adapters_rejected(self):
+        with self.assertRaises(ValueError):
+            Router({})
 
 
 class CardTest(unittest.TestCase):

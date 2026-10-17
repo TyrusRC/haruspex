@@ -1,16 +1,25 @@
 """Haruspex decision server — the Jev / TypeSafe contract Praetor / assay call.
 
   pip install -e ".[serve]"
-  haruspex-serve --model runs/sec --port 3000
-  # or: uvicorn haruspex.serve:app  (set HARUSPEX_MODEL=runs/sec)
+  haruspex-serve --model runs/sec --port 3000                       # one adapter
+  haruspex-serve --adapters web=runs/web,mobile=runs/mobile --port 3000  # per-domain router
+  # or: uvicorn haruspex.serve:app  (set HARUSPEX_MODEL=runs/sec
+  #                                  or HARUSPEX_ADAPTERS=web=runs/web,mobile=runs/mobile)
 
 Request  (Jev / TypeSafe shape):
-  { "model": "...", "state": <str|obj>,
+  { "model": "...", "state": <str|obj>, "domain": "web"|"mobile"|...,
     "questions": { "<name>": { "type": "boolean"|"noul"|"choice"|"score",
                                "instructions": "...",
                                "criteria": {true,false} | {opt:desc} | [low,high] } } }
 Response:
-  { "model": "haruspex", "answers": { "<name>": { ...calibrated verdict... } } }
+  { "model": "haruspex", "domain": "<resolved>",
+    "answers": { "<name>": { ...calibrated verdict... } } }
+
+One ~0.5B model cannot hold every security domain in a single adapter (cross-domain
+interference breaks a merged adapter's clean boundaries). The router keeps a shared
+contract behind ONE endpoint and serves the right per-domain adapter per request,
+selected by the request's `domain` field; an unknown/missing domain falls back to the
+default adapter (fail-open — never an error, never a dropped request).
 
 Self-hosted and keyless — the key authenticates a remote gateway only, so
 Praetor/assay select it with just the base_url (http://127.0.0.1:<port>).
@@ -21,16 +30,52 @@ from __future__ import annotations
 import argparse
 import os
 
-_MODEL = None
+
+def _parse_adapters(spec: str) -> dict[str, str]:
+    """Parse `web=dir,mobile=dir2` (or `;`-separated) into {domain: path}.
+    A bare path with no `=` registers as the default domain `web`."""
+    out: dict[str, str] = {}
+    for part in spec.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            dom, path = part.split("=", 1)
+            out[dom.strip()] = path.strip()
+        else:
+            out["web"] = part
+    return out
 
 
-def _load(path: str):
-    global _MODEL
-    if _MODEL is None:
-        from .config import pick_device
-        from .model import Haruspex
-        _MODEL = Haruspex.load(path, device=pick_device())
-    return _MODEL
+class Router:
+    """Holds one Haruspex instance per domain behind one endpoint.
+
+    NOTE (ceiling): each domain loads its own base copy (~2 GB) because gliner2's
+    load_adapter discards the PEFT wrapper, so clean single-base named-adapter
+    switching is not exposed. Fine for a few domains; the upgrade path is PEFT
+    named adapters on one shared base once gliner2 exposes set_adapter."""
+
+    def __init__(self, adapters: dict[str, str], default: str = "web"):
+        if not adapters:
+            raise ValueError("Router needs at least one adapter")
+        self.adapters = adapters
+        # Default must be a registered domain; fall back to the first registered.
+        self.default = default if default in adapters else next(iter(adapters))
+        self._cache: dict[str, object] = {}
+
+    def resolve(self, domain: str | None) -> str:
+        """Map a requested domain to a served one. Unknown/missing -> default
+        (fail-open: a routing miss costs a less-tuned rank, never an error)."""
+        d = (domain or "").strip()
+        return d if d in self.adapters else self.default
+
+    def model(self, domain: str | None):
+        d = self.resolve(domain)
+        if d not in self._cache:
+            from .config import pick_device
+            from .model import Haruspex
+            self._cache[d] = Haruspex.load(self.adapters[d], device=pick_device())
+        return self._cache[d]
 
 
 def _question_to_row(state, q: dict) -> dict:
@@ -50,7 +95,7 @@ def _question_to_row(state, q: dict) -> dict:
     return row
 
 
-def build_app(model_path: str):
+def build_app(adapters: dict[str, str], default: str = "web"):
     # Built on Starlette directly (FastAPI's base): route handlers receive the
     # request positionally, so there is no body/query heuristic across versions.
     from starlette.applications import Starlette
@@ -58,27 +103,32 @@ def build_app(model_path: str):
     from starlette.routing import Route
 
     served_name = os.environ.get("HARUSPEX_SERVED_NAME", "haruspex")
+    router = Router(adapters, default=default)
 
     async def health(request):
-        return JSONResponse({"ok": _MODEL is not None, "model": model_path})
+        return JSONResponse({"ok": bool(router._cache), "domains": list(router.adapters),
+                             "default": router.default})
 
     async def models(request):
         return JSONResponse({"object": "list",
-                             "data": [{"id": served_name, "object": "model"}]})
+                             "data": [{"id": served_name, "object": "model",
+                                       "domains": list(router.adapters)}]})
 
     async def evaluate(request):
-        m = _load(model_path)
         body = await request.json()
         state = body.get("state", "")
+        domain = router.resolve(body.get("domain"))
+        m = router.model(domain)
         answers = {}
         for name, q in (body.get("questions") or {}).items():
             try:
                 answers[name] = m.decide(_question_to_row(state, q))
             except ValueError as e:
                 answers[name] = {"error": str(e)}
-        return JSONResponse({"model": body.get("model") or served_name, "answers": answers})
+        return JSONResponse({"model": body.get("model") or served_name,
+                             "domain": domain, "answers": answers})
 
-    _load(model_path)   # warm the model before serving (version-proof: no lifespan hook)
+    router.model(router.default)   # warm the default (version-proof: no lifespan hook)
     return Starlette(routes=[
         Route("/health", health, methods=["GET"]),
         Route("/v1/models", models, methods=["GET"]),
@@ -88,21 +138,40 @@ def build_app(model_path: str):
     ])
 
 
-# `uvicorn haruspex.serve:app` entry (reads HARUSPEX_MODEL).
+def _adapters_from_env() -> tuple[dict[str, str], str] | None:
+    """HARUSPEX_ADAPTERS (per-domain router) or HARUSPEX_MODEL (single) -> (adapters, default)."""
+    spec = os.environ.get("HARUSPEX_ADAPTERS", "").strip()
+    if spec:
+        return _parse_adapters(spec), os.environ.get("HARUSPEX_DEFAULT_DOMAIN", "web")
+    single = os.environ.get("HARUSPEX_MODEL", "").strip()
+    if single:
+        return {"web": single}, "web"
+    return None
+
+
+# `uvicorn haruspex.serve:app` entry (reads HARUSPEX_ADAPTERS / HARUSPEX_MODEL).
 app = None
-if os.environ.get("HARUSPEX_MODEL"):
-    app = build_app(os.environ["HARUSPEX_MODEL"])
+_env = _adapters_from_env()
+if _env is not None:
+    app = build_app(_env[0], default=_env[1])
 
 
 def main():
     ap = argparse.ArgumentParser(description="Serve Haruspex over /v1/evaluate")
-    ap.add_argument("--model", default="", help="model id/dir (default base)")
+    ap.add_argument("--model", default="", help="single model id/dir (default base); served as domain 'web'")
+    ap.add_argument("--adapters", default="",
+                    help="per-domain router: web=dir,mobile=dir2 (one /v1/evaluate endpoint, routed by request 'domain')")
+    ap.add_argument("--default-domain", default="web", help="domain used when a request omits/mismatches 'domain'")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=3000)
     args = ap.parse_args()
-    from .config import resolve_model
     import uvicorn
-    uvicorn.run(build_app(resolve_model(args.model)), host=args.host, port=args.port)
+    from .config import resolve_model
+    if args.adapters:
+        adapters = _parse_adapters(args.adapters)
+    else:
+        adapters = {"web": resolve_model(args.model)}
+    uvicorn.run(build_app(adapters, default=args.default_domain), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
