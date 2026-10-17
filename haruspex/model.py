@@ -28,34 +28,67 @@ class Haruspex:
         self.route_cve = route_cve
 
     @classmethod
-    def load(cls, path: str = "", device: str = "cpu", calibrator=None) -> "Haruspex":
+    def load(cls, path: str = "", device: str = "cpu", calibrator=None,
+             subfolder: str = "") -> "Haruspex":
         """Load a GLiNER2.5-Decide base, or a Haruspex adapter artifact (a dir with
         `haruspex.json`: the reused base + a LoRA adapter reattached at inference).
-        A sibling `calibrator.json` is picked up automatically when present."""
+        `path` is a local dir or an HF repo id; `subfolder` selects one adapter inside
+        a multi-domain repo (e.g. load("TyrusRC/haruspex", subfolder="mobile")). A
+        sibling `calibrator.json` and CVE data are picked up from the same dir."""
         model_id = resolve_model(path)
-        manifest = Path(model_id) / "haruspex.json"
-        if manifest.exists():
-            from gliner2 import GLiNER2
-            spec = json.loads(manifest.read_text())
-            model = GLiNER2.from_pretrained(spec["base"])
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")   # load_adapter warns as deprecated
-                model.load_adapter(str(Path(model_id) / spec.get("adapter", "final")))
-        else:
+        root, passthrough = cls._resolve_dir(model_id, subfolder)
+        if passthrough:
+            # a plain base model id (no adapter manifest) — gliner2 handles the download
             from gliner2 import AutoExtractor
             model = AutoExtractor.from_pretrained(model_id)
+            root = Path(model_id)   # for a local base dir; harmless otherwise
+        else:
+            manifest = root / "haruspex.json"
+            if manifest.exists():
+                from gliner2 import GLiNER2
+                spec = json.loads(manifest.read_text())
+                model = GLiNER2.from_pretrained(spec["base"])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")   # load_adapter warns as deprecated
+                    model.load_adapter(str(root / spec.get("adapter", "final")))
+            else:
+                from gliner2 import AutoExtractor
+                model = AutoExtractor.from_pretrained(str(root))
         if device and device != "cpu":
             try:
                 model.to(device) if hasattr(model, "to") else model.cuda()
             except Exception:  # noqa: BLE001 - fall back to CPU if the move fails
                 pass
         if calibrator is None:
-            cal = Path(model_id) / "calibrator.json"
+            cal = root / "calibrator.json"
             if cal.exists():
                 from .calibrate import SelectiveCalibrator
                 calibrator = SelectiveCalibrator.load(cal)
         from .cve import CveResolver
-        return cls(model, calibrator, cve_resolver=CveResolver.from_dir(model_id))
+        return cls(model, calibrator, cve_resolver=CveResolver.from_dir(str(root)))
+
+    @staticmethod
+    def _resolve_dir(model_id: str, subfolder: str = "") -> tuple[Path, bool]:
+        """Return (local_dir_holding_the_adapter, is_base_passthrough).
+
+        A local dir is used as-is. An HF repo id is probed for the adapter manifest:
+        present -> snapshot the repo to a local cache and read from there (this is what
+        makes `Haruspex.load("<org>/haruspex")` actually reattach the adapter, not just
+        load the base); absent -> it is a plain base model id, pass it through to
+        gliner2's own downloader. NOTE: snapshot pulls the whole repo (sibling adapter
+        subfolders included) — a few extra MB, acceptable; narrow with allow_patterns
+        if a repo ever grows large."""
+        p = Path(model_id)
+        if p.is_dir():
+            return (p / subfolder if subfolder else p), False
+        rel = f"{subfolder}/haruspex.json" if subfolder else "haruspex.json"
+        try:
+            from huggingface_hub import hf_hub_download, snapshot_download
+            hf_hub_download(model_id, rel)   # cheap probe: 404 if not an adapter repo
+        except Exception:  # noqa: BLE001 - not an adapter repo -> base passthrough
+            return p, True
+        snap = Path(snapshot_download(model_id))
+        return (snap / subfolder if subfolder else snap), False
 
     def _classify(self, row: dict) -> tuple[str, float]:
         """Top label + its confidence for one decision row.

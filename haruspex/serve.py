@@ -112,7 +112,9 @@ class Router:
         if d not in self._cache:
             from .config import pick_device
             from .model import Haruspex
-            self._cache[d] = Haruspex.load(self.adapters[d], device=pick_device())
+            # a spec may name a subfolder in a multi-domain repo: repo#subfolder
+            path, _, sub = self.adapters[d].partition("#")
+            self._cache[d] = Haruspex.load(path, device=pick_device(), subfolder=sub)
         return self._cache[d]
 
 

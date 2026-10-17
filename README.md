@@ -275,7 +275,8 @@ behind one routed endpoint (`--adapters web=…,mobile=…`, picked by the reque
 one endpoint per domain.
 
 `data/mobile.jsonl` (203 rows, MASVS-aligned Android/iOS) trains a **dedicated mobile
-adapter** (published at [`TyrusRC/haruspex-mobile`](https://huggingface.co/TyrusRC/haruspex-mobile)):
+adapter** (published as the `mobile/` subfolder of
+[`TyrusRC/haruspex`](https://huggingface.co/TyrusRC/haruspex)):
 on its held-out split it scores **accuracy 0.98, recall 1.00** (no missed findings) and
 cleanly separates real findings (hardcoded secret, debuggable, exported component, ATS-off,
 WebView bridge → ~1.0) from hardened ones (Keystore, `exported=false`,
@@ -283,8 +284,13 @@ EncryptedSharedPreferences → ~0.0) — concepts the shared model could not lea
 from the Hub:
 
 ```sh
-haruspex-serve --adapters web=TyrusRC/haruspex,mobile=TyrusRC/haruspex-mobile --port 3000
+haruspex-serve --adapters web=TyrusRC/haruspex,mobile=TyrusRC/haruspex#mobile --port 3000
 ```
+
+One repo holds every domain: the **web/SOC** adapter at the root and each other domain in
+its own subfolder (`mobile/`, …). A spec `repo#subfolder` loads that subfolder; a new
+domain is a new subfolder in the same repo, not a new repo — so it stays one repo, one
+endpoint, one API anyone can call.
 
 Each tool names its domain: a mobile scanner (e.g. centurion) sends `"domain":"mobile"`,
 web/code tools (assay, mantis, praetor) send `"web"`; a routed server picks the adapter and
