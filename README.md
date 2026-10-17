@@ -211,6 +211,13 @@ haruspex-serve --adapters web=runs/web,mobile=runs/mobile --port 3000
 # never an error. A single --model server ignores the field and answers from its one model.
 ```
 
+**Smart-switch fallback.** An explicit `domain` always wins (the calling tool knows its
+own domain, so a hint never mis-routes). When a request omits `domain`, the router infers
+one from the request text — mobile signals (`APK`, `AndroidManifest`, `strings.xml`,
+`debuggable`, …) route to the mobile adapter, otherwise the default. The response reports
+`domain_source` as `hint` / `inferred` / `default`. Inference runs only over registered
+adapters, so it never invents a domain the server cannot serve.
+
 The shared base is loaded once *per domain* (gliner2 does not yet expose single-base
 adapter switching), so the router's win over running one server per domain is the single
 endpoint and routing — a mixed-domain caller (e.g. praetor) hits one URL. Each tool sends

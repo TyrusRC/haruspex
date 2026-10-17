@@ -28,7 +28,19 @@ Praetor/assay select it with just the base_url (http://127.0.0.1:<port>).
 from __future__ import annotations
 
 import argparse
+import json
 import os
+
+# Keyword signals that infer a domain when a request carries NO explicit `domain`
+# (the "smart switch" fallback). Add a domain here as data, not code. Inference runs
+# ONLY over registered adapters and ONLY when the caller gave no hint — an explicit
+# hint always wins (the tools know their own domain; a content guess can mis-route).
+_DOMAIN_HINTS: dict[str, tuple[str, ...]] = {
+    "mobile": ("apk", "android", "androidmanifest", "android:exported", "debuggable",
+               "strings.xml", "info.plist", "keystore", "webview", "deeplink", "deep link",
+               "frida", "smali", ".dex", "minsdk", "sharedpreferences", "app transport security",
+               " ats ", ".ipa", "objective-c", "intent filter", "content provider", "ios app"),
+}
 
 
 def _parse_adapters(spec: str) -> dict[str, str]:
@@ -63,11 +75,37 @@ class Router:
         self.default = default if default in adapters else next(iter(adapters))
         self._cache: dict[str, object] = {}
 
-    def resolve(self, domain: str | None) -> str:
-        """Map a requested domain to a served one. Unknown/missing -> default
-        (fail-open: a routing miss costs a less-tuned rank, never an error)."""
+    def route(self, domain: str | None, state="") -> tuple[str, str]:
+        """Pick the served domain and say how. Returns (domain, source):
+          - explicit hint that is registered       -> (hint, "hint")
+          - explicit hint that is NOT registered    -> (default, "default")  (respect intent, don't guess)
+          - no hint, state matches a domain's signal -> (inferred, "inferred")  (smart switch)
+          - no hint, no signal                       -> (default, "default")
+        Fail-open: a routing miss costs a less-tuned rank, never an error."""
         d = (domain or "").strip()
-        return d if d in self.adapters else self.default
+        if d in self.adapters:
+            return d, "hint"
+        if d:
+            return self.default, "default"
+        inferred = self._infer(state)
+        return (inferred, "inferred") if inferred else (self.default, "default")
+
+    def _infer(self, state) -> str | None:
+        """Infer a registered domain from the request text, or None. Only a
+        non-default domain is worth inferring — the default needs no signal."""
+        text = (state if isinstance(state, str) else json.dumps(state, default=str)).lower()
+        best, score = None, 0
+        for dom, kws in _DOMAIN_HINTS.items():
+            if dom not in self.adapters or dom == self.default:
+                continue
+            c = sum(1 for k in kws if k in text)
+            if c > score:
+                best, score = dom, c
+        return best if score > 0 else None
+
+    def resolve(self, domain: str | None) -> str:
+        """Back-compat: the routed domain for a hint only (no state inference)."""
+        return self.route(domain, "")[0]
 
     def model(self, domain: str | None):
         d = self.resolve(domain)
@@ -117,7 +155,7 @@ def build_app(adapters: dict[str, str], default: str = "web"):
     async def evaluate(request):
         body = await request.json()
         state = body.get("state", "")
-        domain = router.resolve(body.get("domain"))
+        domain, source = router.route(body.get("domain"), state)
         m = router.model(domain)
         answers = {}
         for name, q in (body.get("questions") or {}).items():
@@ -126,7 +164,7 @@ def build_app(adapters: dict[str, str], default: str = "web"):
             except ValueError as e:
                 answers[name] = {"error": str(e)}
         return JSONResponse({"model": body.get("model") or served_name,
-                             "domain": domain, "answers": answers})
+                             "domain": domain, "domain_source": source, "answers": answers})
 
     router.model(router.default)   # warm the default (version-proof: no lifespan hook)
     return Starlette(routes=[

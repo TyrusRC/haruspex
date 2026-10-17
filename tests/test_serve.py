@@ -64,6 +64,27 @@ class RouterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             Router({})
 
+    def test_smart_switch_infers_mobile_only_without_hint(self):
+        r = Router({"web": "a", "mobile": "b"}, default="web")
+        # no hint + mobile signal in state -> inferred mobile
+        dom, src = r.route(None, "Android app ships AKIA... in res/values/strings.xml inside the APK")
+        self.assertEqual((dom, src), ("mobile", "inferred"))
+        # no hint + plain web text -> default web (no non-default signal)
+        self.assertEqual(r.route(None, "SQL injection confirmed on /login via UNION SELECT"),
+                         ("web", "default"))
+
+    def test_explicit_hint_always_wins_over_inference(self):
+        r = Router({"web": "a", "mobile": "b"}, default="web")
+        # explicit web hint beats mobile-looking text (caller knows its domain)
+        self.assertEqual(r.route("web", "android APK debuggable strings.xml"), ("web", "hint"))
+        # explicit-but-unregistered -> default, never a guess
+        self.assertEqual(r.route("cloud", "android APK debuggable"), ("web", "default"))
+
+    def test_inference_only_over_registered_domains(self):
+        # mobile text but no mobile adapter registered -> stays default (web)
+        r = Router({"web": "a"}, default="web")
+        self.assertEqual(r.route(None, "android APK debuggable strings.xml"), ("web", "default"))
+
 
 class CardTest(unittest.TestCase):
     def test_card_fills_from_config(self):
