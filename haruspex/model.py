@@ -68,6 +68,12 @@ class Haruspex:
                 model.to(device) if hasattr(model, "to") else model.cuda()
             except Exception:  # noqa: BLE001 - fall back to CPU if the move fails
                 pass
+        if hasattr(model, "eval"):
+            # Inference must run in eval mode: a model left in train mode keeps
+            # dropout active, which was found live to perturb borderline scores
+            # run-to-run on the SAME input — real non-determinism, concentrated
+            # exactly in the ambiguous/near-boundary cases that matter most.
+            model.eval()
         if calibrator is None:
             cal = root / "calibrator.json"
             if cal.exists():
