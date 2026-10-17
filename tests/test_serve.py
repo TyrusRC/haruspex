@@ -128,3 +128,12 @@ class SelectiveCalibratorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StateSizeGuardTest(unittest.TestCase):
+    """serve.py MAX_STATE_CHARS — the fix for the 2MB-state OOM kill found live."""
+
+    def test_constant_is_sane(self):
+        from haruspex.serve import MAX_STATE_CHARS
+        self.assertGreater(MAX_STATE_CHARS, 0)
+        self.assertLess(MAX_STATE_CHARS, 1_000_000)  # must stay well under OOM territory

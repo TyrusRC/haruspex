@@ -31,6 +31,13 @@ import argparse
 import json
 import os
 
+# A `state` beyond this is rejected before it reaches the tokenizer. Measured: a single
+# ~2 MB state drove the DeBERTa-v3-large encoder to ~8.5 GB RSS and the process was
+# OOM-killed with no error returned to the caller — an unauthenticated request-size DoS.
+# 64 KB covers any real finding/code-snippet/IaC-block with headroom; still-oversized
+# content should be summarized/truncated by the caller, not sent whole.
+MAX_STATE_CHARS = 65536
+
 # Keyword signals that infer a domain when a request carries NO explicit `domain`
 # (the "smart switch" fallback). Add a domain here as data, not code. Inference runs
 # ONLY over registered adapters and ONLY when the caller gave no hint — an explicit
@@ -166,10 +173,20 @@ def build_app(adapters: dict[str, str], default: str = "web"):
     async def evaluate(request):
         body = await request.json()
         state = body.get("state", "")
+        state_len = len(state) if isinstance(state, str) else len(json.dumps(state, default=str))
+        questions = body.get("questions") or {}
+        if state_len > MAX_STATE_CHARS:
+            # Reject before routing/inference touches it — a request this large does not
+            # get a domain or a verdict, it gets a clean error for every question asked.
+            err = {"error": f"state too large ({state_len} chars > {MAX_STATE_CHARS} limit)"}
+            return JSONResponse({"model": body.get("model") or served_name,
+                                 "domain": None, "domain_source": "rejected",
+                                 "answers": {name: dict(err) for name in questions}},
+                                status_code=413)
         domain, source = router.route(body.get("domain"), state)
         m = router.model(domain)
         answers = {}
-        for name, q in (body.get("questions") or {}).items():
+        for name, q in questions.items():
             try:
                 answers[name] = m.decide(_question_to_row(state, q))
             except ValueError as e:
