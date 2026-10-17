@@ -285,6 +285,8 @@ def main():
     ap.add_argument("--default-domain", default="web", help="domain used when a request omits/mismatches 'domain'")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=3000)
+    ap.add_argument("--ssl-keyfile", default="", help="serve HTTPS: path to a PEM private key (pairs with --ssl-certfile)")
+    ap.add_argument("--ssl-certfile", default="", help="serve HTTPS: path to a PEM certificate (pairs with --ssl-keyfile)")
     args = ap.parse_args()
     import uvicorn
     from .config import resolve_model
@@ -292,7 +294,12 @@ def main():
         adapters = _parse_adapters(args.adapters)
     else:
         adapters = {"web": resolve_model(args.model)}
-    uvicorn.run(build_app(adapters, default=args.default_domain), host=args.host, port=args.port)
+    tls = {}
+    if args.ssl_keyfile or args.ssl_certfile:
+        if not (args.ssl_keyfile and args.ssl_certfile):
+            raise SystemExit("--ssl-keyfile and --ssl-certfile must be given together")
+        tls = {"ssl_keyfile": args.ssl_keyfile, "ssl_certfile": args.ssl_certfile}
+    uvicorn.run(build_app(adapters, default=args.default_domain), host=args.host, port=args.port, **tls)
 
 
 if __name__ == "__main__":

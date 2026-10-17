@@ -207,3 +207,15 @@ class HardeningTest(unittest.TestCase):
             self.assertNotIn("state", lines[0])  # raw state must never be logged
         finally:
             _os.unlink(path)
+
+
+class TLSArgsTest(unittest.TestCase):
+    """--ssl-keyfile/--ssl-certfile must be given together or rejected (main()'s CLI guard)."""
+
+    def test_mismatched_ssl_args_rejected(self):
+        import subprocess, sys
+        r = subprocess.run([sys.executable, "-m", "haruspex.serve", "--model", "x",
+                            "--ssl-keyfile", "/tmp/nonexistent-key.pem"],
+                           capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ssl-keyfile and --ssl-certfile", r.stderr + r.stdout)

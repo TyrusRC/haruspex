@@ -1,0 +1,39 @@
+[Unit]
+Description=Haruspex decision server
+After=network.target
+
+[Service]
+Type=simple
+# Edit these three for your deployment:
+Environment=HARUSPEX_ADAPTERS=web=/opt/haruspex/web,mobile=/opt/haruspex/mobile,network=/opt/haruspex/network,llm=/opt/haruspex/llm,cloud=fastino/GLiNER2.5-Decide
+Environment=HARUSPEX_DEFAULT_DOMAIN=web
+# Optional hardening — uncomment what you need; see ../docs/DEPLOY.md.
+# Environment=HARUSPEX_API_KEY=<secret>                 # require Bearer auth
+# Environment=HARUSPEX_AUDIT_LOG=/var/log/haruspex/audit.jsonl
+WorkingDirectory=/opt/haruspex
+ExecStart=/opt/haruspex/.venv/bin/python -m haruspex.serve --host 127.0.0.1 --port 3000
+
+# Auto-restart on crash (the whole reason this unit exists: a lazily-loaded adapter,
+# an OOM from something outside the request-size guard, or any other crash gets the
+# server back up without a human paging in at 3am). Cap the retry rate so a
+# persistently-crashing process doesn't spin the host.
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# The service holds the base model + N adapters in RAM/VRAM (~2 GB each on CPU) and
+# does blocking inference inline — give it real memory headroom, not a tight cgroup.
+MemoryHigh=16G
+
+# Least privilege: no new privileges, private /tmp, no access outside its own dirs.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/haruspex
+
+User=haruspex
+Group=haruspex
+
+[Install]
+WantedBy=multi-user.target
