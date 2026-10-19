@@ -21,7 +21,8 @@ from .data import load_rows, to_input_example
 
 def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
           batch_size=4, grad_accum=1, lora_r=16, lora_alpha=32, logging_steps=5,
-          grad_checkpoint=None, max_len=None, seed=0, sanity_gate=True, gate_domain="web"):
+          grad_checkpoint=None, max_len=None, seed=0, sanity_gate=True,
+          gate_domain="web", save_every=0, resume=False):
     import torch
     from gliner2 import GLiNER2
     from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
@@ -39,18 +40,33 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
     # Full fine-tune always checkpoints; LoRA checkpoints on request (long,
     # many-option states — real decision data — can OOM a modest GPU otherwise).
     ckpt = (mode == "full") if grad_checkpoint is None else grad_checkpoint
+    # save_every: save an intermediate checkpoint every N steps (0 = final only).
+    # Intermediate checkpoints land under <out>/checkpoint-<step>/ and the last
+    # save_total_limit are kept. On resume, the trainer picks up from the latest.
+    save_steps = save_every if save_every > 0 else None
+    save_limit = 2 if save_steps else 1
     cfg = TrainingConfig(
         output_dir=out, num_epochs=epochs, max_steps=max_steps,
         batch_size=batch_size, gradient_accumulation_steps=grad_accum,
         use_lora=(mode == "lora"), lora_r=lora_r, lora_alpha=lora_alpha,
         gradient_checkpointing=ckpt, max_len=max_len,
         bf16=cuda, fp16=False, eval_strategy="no", save_best=False,
-        save_total_limit=1, num_workers=0, pin_memory=False,
+        save_total_limit=save_limit, num_workers=0, pin_memory=False,
         validate_data=False, logging_steps=logging_steps, warmup_ratio=0.1,
+        **({"save_steps": save_steps} if save_steps else {}),
     )
     model = GLiNER2.from_pretrained(base)
     trainer = GLiNER2Trainer(model=model, config=cfg)
-    trainer.train(train_data=examples)
+    # Resume from the latest checkpoint if one exists and --resume is set.
+    train_kwargs: dict = {"train_data": examples}
+    if resume:
+        ckpt_dirs = sorted(Path(out).glob("checkpoint-*"),
+                           key=lambda p: int(p.name.split("-")[-1]) if p.name.split("-")[-1].isdigit() else 0)
+        if ckpt_dirs:
+            resume_path = str(ckpt_dirs[-1])
+            print(f"[train] resuming from {resume_path}", flush=True)
+            train_kwargs["resume_from_checkpoint"] = resume_path
+    trainer.train(**train_kwargs)
     if mode != "lora":
         # NOTE (ceiling): a full fine-tune trains fine, but merge/save writes an
         # incompatible span-head checkpoint in gliner2 2.1 that will not reload.
@@ -178,16 +194,23 @@ def main():
     ap.add_argument("--no-sanity-gate", action="store_true",
                     help="skip the post-train discrimination probe (not recommended)")
     ap.add_argument("--gate-domain", default="web", help="sanity-gate probe set: web | mobile | all")
+    ap.add_argument("--save-every", type=int, default=0,
+                    help="save intermediate checkpoint every N steps (0 = final only). "
+                         "Allows --resume if training is interrupted.")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from latest checkpoint in --out dir (requires prior --save-every run)")
     args = ap.parse_args()
 
     from .config import resolve_model
     base = resolve_model(args.base)
     rows = load_rows(args.train)
-    print(f"[train] base={base} rows={len(rows)} mode={args.mode} seed={args.seed}")
+    print(f"[train] base={base} rows={len(rows)} mode={args.mode} seed={args.seed}"
+          f"{' resume' if args.resume else ''}")
     out = train(base, rows, args.out, mode=args.mode, epochs=args.epochs,
                 max_steps=args.max_steps, batch_size=args.batch, grad_accum=args.grad_accum,
                 grad_checkpoint=args.grad_checkpoint or None, max_len=args.max_len or None,
-                seed=args.seed, sanity_gate=not args.no_sanity_gate, gate_domain=args.gate_domain)
+                seed=args.seed, sanity_gate=not args.no_sanity_gate, gate_domain=args.gate_domain,
+                save_every=args.save_every, resume=args.resume)
     print(f"[train] saved standalone model -> {out}")
     print("[train] fit a calibrator next: python -m haruspex.calibrate "
           f"--model {out} --data <val.jsonl>")
