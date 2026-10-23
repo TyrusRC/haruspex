@@ -9,7 +9,7 @@ adjudication data (data/dast_adjudication.jsonl). They serve as the
 regression gate: any future model change must pass these.
 """
 import os
-import pytest
+import unittest
 
 REAL_FINDINGS = [
     {
@@ -67,7 +67,6 @@ NOISE_FINDINGS = [
     },
 ]
 
-# Novel classes NOT in training data — haruspex must generalize.
 NOVEL_FINDINGS = [
     {
         "label": "novel-verified-ldap-injection",
@@ -88,18 +87,7 @@ _Q = {
 }
 
 
-def _model_available():
-    """Check if a haruspex model is reachable."""
-    try:
-        import httpx
-        r = httpx.get("http://127.0.0.1:3000/health", timeout=2)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
 def _from_pretrained():
-    """Try loading from local runs/sec, fall back to HTTP."""
     model_dir = os.path.join(os.path.dirname(__file__), "..", "runs", "sec")
     if os.path.isdir(model_dir):
         from haruspex import Haruspex
@@ -107,64 +95,74 @@ def _from_pretrained():
     return None
 
 
-@pytest.fixture(scope="module")
-def model():
-    m = _from_pretrained()
-    if m is not None:
-        return m
-    if _model_available():
-        pytest.skip("Model loaded via HTTP — use live server tests instead")
-    pytest.skip("No haruspex model available (no runs/sec dir and no server on :3000)")
+def _model_available():
+    try:
+        from urllib.request import urlopen
+        r = urlopen("http://127.0.0.1:3000/health", timeout=2)
+        return r.status == 200
+    except Exception:
+        return False
 
 
-@pytest.mark.parametrize("case", REAL_FINDINGS, ids=[c["label"] for c in REAL_FINDINGS])
-def test_real_finding_scores_high(model, case):
-    result = model.decide({**_Q, "state": case["state"]})
-    assert result.probability >= case["min_prob"], (
-        f"Real finding '{case['label']}' scored {result.probability:.3f}, "
-        f"expected >= {case['min_prob']}"
-    )
+class TestAssayFormatDiscrimination(unittest.TestCase):
+    _model = None
+    _skip = False
+
+    @classmethod
+    def setUpClass(cls):
+        cls._model = _from_pretrained()
+        if cls._model is None and not _model_available():
+            cls._skip = True
+
+    def setUp(self):
+        if self._skip:
+            self.skipTest("No haruspex model available (no runs/sec dir and no server on :3000)")
+
+    def test_real_findings_score_high(self):
+        for case in REAL_FINDINGS:
+            with self.subTest(label=case["label"]):
+                result = self._model.decide({**_Q, "state": case["state"]})
+                self.assertGreaterEqual(
+                    result.probability, case["min_prob"],
+                    f"Real finding '{case['label']}' scored {result.probability:.3f}, "
+                    f"expected >= {case['min_prob']}")
+
+    def test_noise_findings_score_low(self):
+        for case in NOISE_FINDINGS:
+            with self.subTest(label=case["label"]):
+                result = self._model.decide({**_Q, "state": case["state"]})
+                self.assertLessEqual(
+                    result.probability, case["max_prob"],
+                    f"Noise finding '{case['label']}' scored {result.probability:.3f}, "
+                    f"expected <= {case['max_prob']}")
+
+    def test_novel_class_generalizes(self):
+        for case in NOVEL_FINDINGS:
+            with self.subTest(label=case["label"]):
+                result = self._model.decide({**_Q, "state": case["state"]})
+                if "min_prob" in case:
+                    self.assertGreaterEqual(
+                        result.probability, case["min_prob"],
+                        f"Novel real '{case['label']}' scored {result.probability:.3f}")
+                else:
+                    self.assertLessEqual(
+                        result.probability, case["max_prob"],
+                        f"Novel noise '{case['label']}' scored {result.probability:.3f}")
+
+    def test_separation_gap(self):
+        real_scores, noise_scores = [], []
+        for case in REAL_FINDINGS:
+            r = self._model.decide({**_Q, "state": case["state"]})
+            real_scores.append(r.probability)
+        for case in NOISE_FINDINGS:
+            r = self._model.decide({**_Q, "state": case["state"]})
+            noise_scores.append(r.probability)
+        avg_real = sum(real_scores) / len(real_scores)
+        avg_noise = sum(noise_scores) / len(noise_scores)
+        gap = avg_real - avg_noise
+        self.assertGreaterEqual(gap, 0.4,
+            f"Separation gap {gap:.3f} (real avg {avg_real:.3f}, noise avg {avg_noise:.3f})")
 
 
-@pytest.mark.parametrize("case", NOISE_FINDINGS, ids=[c["label"] for c in NOISE_FINDINGS])
-def test_noise_finding_scores_low(model, case):
-    result = model.decide({**_Q, "state": case["state"]})
-    assert result.probability <= case["max_prob"], (
-        f"Noise finding '{case['label']}' scored {result.probability:.3f}, "
-        f"expected <= {case['max_prob']}"
-    )
-
-
-@pytest.mark.parametrize("case", NOVEL_FINDINGS, ids=[c["label"] for c in NOVEL_FINDINGS])
-def test_novel_class_generalizes(model, case):
-    """Haruspex must handle finding types NOT in training data."""
-    result = model.decide({**_Q, "state": case["state"]})
-    if "min_prob" in case:
-        assert result.probability >= case["min_prob"], (
-            f"Novel real finding '{case['label']}' scored {result.probability:.3f}, "
-            f"expected >= {case['min_prob']}"
-        )
-    else:
-        assert result.probability <= case["max_prob"], (
-            f"Novel noise finding '{case['label']}' scored {result.probability:.3f}, "
-            f"expected <= {case['max_prob']}"
-        )
-
-
-def test_separation_gap(model):
-    """Real findings must score significantly higher than noise."""
-    real_scores = []
-    for case in REAL_FINDINGS:
-        r = model.decide({**_Q, "state": case["state"]})
-        real_scores.append(r.probability)
-    noise_scores = []
-    for case in NOISE_FINDINGS:
-        r = model.decide({**_Q, "state": case["state"]})
-        noise_scores.append(r.probability)
-    avg_real = sum(real_scores) / len(real_scores)
-    avg_noise = sum(noise_scores) / len(noise_scores)
-    gap = avg_real - avg_noise
-    assert gap >= 0.4, (
-        f"Separation gap {gap:.3f} (real avg {avg_real:.3f}, noise avg {avg_noise:.3f}), "
-        f"expected >= 0.4"
-    )
+if __name__ == "__main__":
+    unittest.main()
