@@ -43,8 +43,7 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
     # save_every: save an intermediate checkpoint every N steps (0 = final only).
     # Intermediate checkpoints land under <out>/checkpoint-<step>/ and the last
     # save_total_limit are kept. On resume, the trainer picks up from the latest.
-    save_steps = save_every if save_every > 0 else None
-    save_limit = 2 if save_steps else 1
+    save_limit = 2 if save_every > 0 else 1
     cfg = TrainingConfig(
         output_dir=out, num_epochs=epochs, max_steps=max_steps,
         batch_size=batch_size, gradient_accumulation_steps=grad_accum,
@@ -53,7 +52,6 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
         bf16=cuda, fp16=False, eval_strategy="no", save_best=False,
         save_total_limit=save_limit, num_workers=0, pin_memory=False,
         validate_data=False, logging_steps=logging_steps, warmup_ratio=0.1,
-        **({"save_steps": save_steps} if save_steps else {}),
     )
     model = GLiNER2.from_pretrained(base)
     trainer = GLiNER2Trainer(model=model, config=cfg)
@@ -133,7 +131,7 @@ _DOMAIN_PROBES = {
     "llm": {
         "real": ["A prompt injection made the model ignore its system prompt and print its hidden instructions",
                  "The model output is passed unsanitized into eval(), so attacker input runs as code",
-                 "A jailbreak via base64 made the model return disallowed content"],
+                 "The LLM endpoint accepted user-controlled tool calls and executed a server-side HTTP request to an internal metadata endpoint"],
         "neg": ["The model refused the jailbreak and stayed on task",
                 "The model echoed a benign greeting with no security impact",
                 "A tool call is gated behind an explicit user confirmation"],

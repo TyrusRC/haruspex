@@ -91,7 +91,7 @@ def _from_pretrained():
     model_dir = os.path.join(os.path.dirname(__file__), "..", "runs", "sec")
     if os.path.isdir(model_dir):
         from haruspex import Haruspex
-        return Haruspex.from_pretrained(model_dir)
+        return Haruspex.load(model_dir)
     return None
 
 
@@ -122,41 +122,44 @@ class TestAssayFormatDiscrimination(unittest.TestCase):
         for case in REAL_FINDINGS:
             with self.subTest(label=case["label"]):
                 result = self._model.decide({**_Q, "state": case["state"]})
+                prob = result["probability"]
                 self.assertGreaterEqual(
-                    result.probability, case["min_prob"],
-                    f"Real finding '{case['label']}' scored {result.probability:.3f}, "
+                    prob, case["min_prob"],
+                    f"Real finding '{case['label']}' scored {prob:.3f}, "
                     f"expected >= {case['min_prob']}")
 
     def test_noise_findings_score_low(self):
         for case in NOISE_FINDINGS:
             with self.subTest(label=case["label"]):
                 result = self._model.decide({**_Q, "state": case["state"]})
+                prob = result["probability"]
                 self.assertLessEqual(
-                    result.probability, case["max_prob"],
-                    f"Noise finding '{case['label']}' scored {result.probability:.3f}, "
+                    prob, case["max_prob"],
+                    f"Noise finding '{case['label']}' scored {prob:.3f}, "
                     f"expected <= {case['max_prob']}")
 
     def test_novel_class_generalizes(self):
         for case in NOVEL_FINDINGS:
             with self.subTest(label=case["label"]):
                 result = self._model.decide({**_Q, "state": case["state"]})
+                prob = result["probability"]
                 if "min_prob" in case:
                     self.assertGreaterEqual(
-                        result.probability, case["min_prob"],
-                        f"Novel real '{case['label']}' scored {result.probability:.3f}")
+                        prob, case["min_prob"],
+                        f"Novel real '{case['label']}' scored {prob:.3f}")
                 else:
                     self.assertLessEqual(
-                        result.probability, case["max_prob"],
-                        f"Novel noise '{case['label']}' scored {result.probability:.3f}")
+                        prob, case["max_prob"],
+                        f"Novel noise '{case['label']}' scored {prob:.3f}")
 
     def test_separation_gap(self):
         real_scores, noise_scores = [], []
         for case in REAL_FINDINGS:
             r = self._model.decide({**_Q, "state": case["state"]})
-            real_scores.append(r.probability)
+            real_scores.append(r["probability"])
         for case in NOISE_FINDINGS:
             r = self._model.decide({**_Q, "state": case["state"]})
-            noise_scores.append(r.probability)
+            noise_scores.append(r["probability"])
         avg_real = sum(real_scores) / len(real_scores)
         avg_noise = sum(noise_scores) / len(noise_scores)
         gap = avg_real - avg_noise
