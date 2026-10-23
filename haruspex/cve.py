@@ -88,6 +88,66 @@ _SEED: dict[str, dict] = {
     "CVE-2018-7600":  {"products": ["drupal"],
                         "branches": [{"prefix": "8.", "fixed_in": "8.5.1"},
                                      {"prefix": "7.", "fixed_in": "7.58"}]},
+    # --- Web servers ---
+    "CVE-2020-1938":  {"products": ["tomcat"],
+                        "branches": [{"prefix": "9.", "fixed_in": "9.0.31"},
+                                     {"prefix": "8.", "fixed_in": "8.5.51"},
+                                     {"prefix": "7.", "fixed_in": "7.0.100"}]},
+    "CVE-2021-23017": {"products": ["nginx"], "introduced": "0.6.18", "fixed_in": "1.21.0"},
+    "CVE-2017-7269":  {"products": ["iis"], "includes": ["6.0"],
+                        "excludes": ["7.0", "7.5", "8.0", "8.5", "10.0"]},
+    "CVE-2021-41773": {"products": ["apache", "httpd"], "introduced": "2.4.49", "fixed_in": "2.4.50"},
+    "CVE-2021-42013": {"products": ["apache", "httpd"], "introduced": "2.4.49", "fixed_in": "2.4.51"},
+    # --- CMS ---
+    "CVE-2023-32243": {"products": ["wordpress", "elementor"], "introduced": "5.4.0", "fixed_in": "5.7.2"},
+    "CVE-2023-23752": {"products": ["joomla"], "introduced": "4.0.0", "fixed_in": "4.2.8"},
+    "CVE-2022-24086": {"products": ["magento", "adobe commerce"], "fixed_in": "2.4.3-p2"},
+    "CVE-2019-11043": {"products": ["php", "fpm", "php-fpm", "nginx"],
+                        "requires_all": ["nginx"], "introduced": "7.1.0", "fixed_in": "7.3.11"},
+    # --- Java ecosystem ---
+    "CVE-2021-45046": {"products": ["log4j"], "introduced": "2.0", "fixed_in": "2.16"},
+    "CVE-2021-45105": {"products": ["log4j"], "introduced": "2.0", "fixed_in": "2.17"},
+    "CVE-2022-22963": {"products": ["spring", "cloud"], "fixed_in": "3.2.2"},
+    "CVE-2017-12149": {"products": ["jboss"], "includes": ["5.", "6."],
+                        "excludes": ["7.", "eap 7"]},
+    "CVE-2020-2555":  {"products": ["weblogic", "coherence"], "fixed_in": "12.2.1.4.0"},
+    "CVE-2023-21931": {"products": ["weblogic"], "fixed_in": "14.1.1.0.0"},
+    # --- Network appliances ---
+    "CVE-2024-21762": {"products": ["fortios", "fortigate"], "introduced": "7.2.0", "fixed_in": "7.4.3"},
+    "CVE-2022-40684": {"products": ["fortios", "fortigate", "fortiproxy"],
+                        "introduced": "7.0.0", "fixed_in": "7.2.2"},
+    "CVE-2023-20198": {"products": ["cisco", "ios xe"], "introduced": "16.12", "fixed_in": "17.9.4a"},
+    "CVE-2024-3400":  {"products": ["palo alto", "pan-os"], "introduced": "10.2.0", "fixed_in": "10.2.9-h1"},
+    "CVE-2023-46805": {"products": ["ivanti", "pulse"], "fixed_in": "22.6R2.2"},
+    "CVE-2024-21887": {"products": ["ivanti", "pulse"], "fixed_in": "22.6R2.2"},
+    # --- Mail ---
+    "CVE-2021-34473": {"products": ["exchange"], "excludes": ["fully patched", "cu23", "cu22"],
+                        "includes": ["2019", "2016", "2013"]},
+    "CVE-2021-34523": {"products": ["exchange"], "excludes": ["fully patched"],
+                        "includes": ["2019", "2016", "2013"]},
+    "CVE-2021-31207": {"products": ["exchange"], "excludes": ["fully patched"],
+                        "includes": ["2019", "2016", "2013"]},
+    "CVE-2022-27925": {"products": ["zimbra"], "fixed_in": "8.8.15p31.1"},
+    "CVE-2022-41040": {"products": ["exchange"],
+                        "includes": ["2019", "2016"], "excludes": ["fully patched"]},
+    # --- Container / K8s ---
+    "CVE-2024-21626": {"products": ["runc", "containerd", "docker"], "fixed_in": "1.1.12"},
+    "CVE-2022-0185":  {"products": ["kernel", "linux"], "introduced": "5.1", "fixed_in": "5.16.2"},
+    "CVE-2022-0811":  {"products": ["cri-o"], "introduced": "1.19", "fixed_in": "1.23.2"},
+    # --- Database ---
+    "CVE-2023-39417": {"products": ["postgresql"], "introduced": "12.0", "fixed_in": "15.4"},
+    "CVE-2023-22809": {"products": ["sudo"], "introduced": "1.8.0", "fixed_in": "1.9.12p2"},
+    # --- VPN / Remote access ---
+    "CVE-2018-13379": {"products": ["fortios", "fortigate"], "introduced": "5.6.3", "fixed_in": "6.0.5"},
+    "CVE-2019-19781": {"products": ["citrix", "netscaler", "adc"], "fixed_in": "13.0-47.24"},
+    "CVE-2023-27997": {"products": ["fortios", "fortigate"], "introduced": "6.0.0", "fixed_in": "7.2.5"},
+    # --- Misc high-profile ---
+    "CVE-2023-44487": {"products": ["http2", "http/2", "h2"],
+                        "excludes": ["patched", "mitigated"]},
+    "CVE-2024-6387":  {"products": ["openssh"], "introduced": "8.5", "fixed_in": "9.8",
+                        "excludes": ["9.8p1", "9.8p2", "9.9", "10."]},
+    "CVE-2023-38408": {"products": ["openssh"], "fixed_in": "9.4"},
+    "CVE-2022-22947": {"products": ["spring", "cloud", "gateway"], "introduced": "3.1.0", "fixed_in": "3.1.1"},
 }
 
 

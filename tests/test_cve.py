@@ -38,6 +38,44 @@ class TestCveResolver(unittest.TestCase):
         self.assertIs(_resolve("CVE-2024-4577", "PHP 8.2.10 under PHP-FPM on Linux"), False)
         self.assertIs(_resolve("CVE-2022-22965", "Spring Boot 2.7 as a standalone executable jar with embedded Tomcat"), False)
 
+    def test_new_entries_true(self):
+        # Ghostcat: Tomcat AJP
+        self.assertIs(_resolve("CVE-2020-1938", "Apache Tomcat 9.0.30"), True)
+        # Apache path traversal
+        self.assertIs(_resolve("CVE-2021-41773", "Apache httpd 2.4.49"), True)
+        # Joomla info disclosure
+        self.assertIs(_resolve("CVE-2023-23752", "Joomla 4.2.7"), True)
+        # Log4Shell variant
+        self.assertIs(_resolve("CVE-2021-45046", "Log4j 2.15.0"), True)
+        # FortiGate auth bypass
+        self.assertIs(_resolve("CVE-2022-40684", "FortiOS 7.2.1"), True)
+        # ProxyShell
+        self.assertIs(_resolve("CVE-2021-34473", "Exchange Server 2019"), True)
+        # regreSSHion
+        self.assertIs(_resolve("CVE-2024-6387", "OpenSSH 9.5p1"), True)
+        # Leaky Vessels
+        self.assertIs(_resolve("CVE-2024-21626", "runc 1.1.10"), True)
+        # sudo
+        self.assertIs(_resolve("CVE-2023-22809", "sudo 1.9.12"), True)
+
+    def test_new_entries_false(self):
+        # Ghostcat: fixed version
+        self.assertIs(_resolve("CVE-2020-1938", "Apache Tomcat 9.0.31"), False)
+        # Apache path traversal: fixed
+        self.assertIs(_resolve("CVE-2021-41773", "Apache httpd 2.4.50"), False)
+        # Joomla: fixed
+        self.assertIs(_resolve("CVE-2023-23752", "Joomla 4.2.8"), False)
+        # Log4j: fixed
+        self.assertIs(_resolve("CVE-2021-45046", "Log4j 2.16"), False)
+        # FortiGate: fixed
+        self.assertIs(_resolve("CVE-2022-40684", "FortiOS 7.2.2"), False)
+        # ProxyShell: wrong product
+        self.assertIs(_resolve("CVE-2021-34473", "nginx 1.20"), False)
+        # regreSSHion: fixed
+        self.assertIs(_resolve("CVE-2024-6387", "OpenSSH 9.8p1"), False)
+        # IIS: wrong version
+        self.assertIs(_resolve("CVE-2017-7269", "IIS 10.0"), False)
+
     def test_defer_on_unknown(self):
         self.assertIsNone(_resolve("CVE-2099-99999", "Some product 1.2.3"))
 
