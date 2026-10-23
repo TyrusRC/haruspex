@@ -19,6 +19,7 @@ data/*.jsonl
 !data/cloud.jsonl
 !data/network.jsonl
 !data/llm.jsonl
+!data/dast_adjudication.jsonl
 # derived splits (regenerate with scripts/split_data.py) stay ignored:
 data/security_train.jsonl
 data/security_test.jsonl
