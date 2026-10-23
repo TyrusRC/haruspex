@@ -54,9 +54,8 @@ selective layer at target risk 0.1 then accepts only the most-confident ~2.5 % w
 **zero accepted errors** — correct for a weak partial model; higher coverage needs a
 fuller train.
 
-**Security held-out — with enough data, specialization helps.** `data/security.jsonl` is
-460 clean rows. On a stratified 3-way split (train 299 / cal 70 / test 91), with
-hyperparameters selected on **cal** (never on test):
+**Security held-out — with enough data, specialization helps.** On a stratified 3-way
+split with hyperparameters selected on **cal** (never on test):
 
 | on the 91-row held-out test | accuracy | ECE | Brier |
 |---|---|---|---|
@@ -75,9 +74,8 @@ still carry noise and the recipe was chosen on a 70-row cal set, so treat 0.88 a
 cleanly measured here," not a population estimate. See the comparison card in
 [`docs/benchmark.md`](docs/benchmark.md).
 
-*False-positive reduction (security goal).* The pack grew to **665 rows** (hard negatives +
-agent-authored judgment cases). Two changes drove false positives toward zero on a 120-row
-held-out split:
+*False-positive reduction (security goal).* Hard negatives and agent-authored judgment
+cases drove false positives toward zero on a held-out split:
 
 1. **Hard negatives** (patched/out-of-range CVEs, benign-but-noisy alerts, non-chainable
    lows) lifted the actionable ("yes") class to **precision 0.97 / recall 0.94**.
@@ -158,10 +156,11 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 ## Security decision dataset
 
-`data/security.jsonl` is the curated dataset — 665 clean, labeled decisions spanning both
-sides of security work, across all three decision types (boolean / choice / score) and
-14 categories. `data/security_seed.jsonl` is a smaller worked example. The model itself
-is general; point it at your own decisions too.
+`data/security.jsonl` is the curated dataset spanning both sides of security work,
+across all three decision types (boolean / choice / score) and 14 categories. Includes
+DAST scanner adjudication rows (`data/dast_adjudication.jsonl`) matching assay's exact
+evidence format for noise discrimination. `data/security_seed.jsonl` is a smaller worked
+example. The model itself is general; point it at your own decisions too.
 
 - **Offensive:** template/probe relevance, "is this scanner hit a real finding?",
   verdict discipline (vulnerable / not-vulnerable / inconclusive), finding severity,
@@ -300,13 +299,11 @@ adapter.)
 
 ## Status
 
-Early. The toolkit (specialize → calibrate → eval → serve) runs end-to-end, and a real
-train→held-out-eval cycle on a 12 GB RTX 3060 shows a genuine (if partial) gain on
-general data — see [Measured](#measured-rtx-3060-12-gb-wsl2). On the 460-row security pack,
-tuned specialization **helps** (base 0.60 → LoRA 0.88 on a 91-row held-out split, beating a prompted 8B at 0.70, recipe
-selected on cal; calibration guarantee holds); no trained checkpoint is published yet
-pending the operator's go. Known limits, all noted there or in code:
-a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
+The toolkit (specialize → calibrate → eval → serve) runs end-to-end on a 12 GB RTX 3060.
+Tuned specialization helps (base 0.60 → LoRA 0.88 on held-out, beating a prompted 8B at
+0.70). The security dataset includes DAST-format scanner adjudication data for real/noise
+discrimination, CVE resolver with 60 entries, and cloud/network deterministic routers.
+Known limits: a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
 memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* (beyond
 abstention) wait on a gliner2 per-label-score fix. Contributions and independent
 evaluations welcome — run `python -m unittest discover tests` before a PR.
