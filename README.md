@@ -158,7 +158,7 @@ from a heuristic, real outcomes, or one-shot distillation from a larger model.
 
 `data/security.jsonl` is the curated dataset spanning both sides of security work,
 across all three decision types (boolean / choice / score) and 14 categories. Includes
-DAST scanner adjudication rows (`data/dast_adjudication.jsonl`) matching assay's exact
+DAST scanner adjudication rows (`data/dast_adjudication.jsonl`) matching vigil's exact
 evidence format for noise discrimination. `data/security_seed.jsonl` is a smaller worked
 example. The model itself is general; point it at your own decisions too.
 
@@ -292,7 +292,7 @@ domain is a new subfolder in the same repo, not a new repo — so it stays one r
 endpoint, one API anyone can call.
 
 Each tool names its domain: a mobile scanner (e.g. centurion) sends `"domain":"mobile"`,
-web/code tools (assay, mantis, praetor) send `"web"`; a routed server picks the adapter and
+web/code tools (vigil, mantis, praetor) send `"web"`; a routed server picks the adapter and
 a single-adapter server ignores the hint. (Note: the post-train sanity-gate's probe is
 web-specific — pass `--gate-domain mobile` or `--no-sanity-gate` when training a non-web
 adapter.)

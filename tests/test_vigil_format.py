@@ -1,7 +1,7 @@
-"""Regression tests: haruspex must discriminate assay's actual evidence format.
+"""Regression tests: haruspex must discriminate vigil's actual evidence format.
 
 These tests validate that the model can distinguish real findings from noise
-when presented with assay's exact evidence text format:
+when presented with vigil's exact evidence text format:
     {Type} on {URL} param "{Param}" [{sev},{conf},{verified/unverified},tool:{name}]: {evidence}{qualifier}
 
 Tests are expected to FAIL until the model is retrained with the DAST

@@ -1,4 +1,4 @@
-"""Haruspex decision server — the Jev / TypeSafe contract Praetor / assay call.
+"""Haruspex decision server — the Jev / TypeSafe contract Praetor / vigil call.
 
   pip install -e ".[serve]"
   haruspex-serve --model runs/sec --port 3000                       # one adapter
@@ -22,7 +22,7 @@ selected by the request's `domain` field; an unknown/missing domain falls back t
 default adapter (fail-open — never an error, never a dropped request).
 
 Self-hosted and keyless — the key authenticates a remote gateway only, so
-Praetor/assay select it with just the base_url (http://127.0.0.1:<port>).
+Praetor/vigil select it with just the base_url (http://127.0.0.1:<port>).
 """
 
 from __future__ import annotations
