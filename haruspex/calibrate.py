@@ -15,7 +15,8 @@ licence to guess.
 
 Thresholds are fitted per decision type: a 2-way softmax never drops below 0.5 while
 a k-way one reaches 1/k, so one shared cutoff means something different per type. A
-type with no calibration rows abstains.
+type with no calibration rows abstains. `--pooled` fits one threshold instead, when the
+calibration split is too small to certify each type.
 
 Temperature scaling (Guo et al. 2017) of the boolean P(yes) is optional and fitted on
 a SEPARATE split (`--temp-data`): fitting it on the calibration split would make the
@@ -179,6 +180,10 @@ def main():
     ap.add_argument("--target-risk", type=float, default=0.1)
     ap.add_argument("--delta", type=float, default=0.1,
                     help="allowed probability that accepted risk exceeds --target-risk")
+    ap.add_argument("--pooled", action="store_true",
+                    help="one threshold across all decision types: the guarantee then holds "
+                         "on average over the type mix, not per type. Use it when the cal "
+                         "split is too small to certify each type on its own")
     ap.add_argument("--device", default="")
     args = ap.parse_args()
 
@@ -200,7 +205,8 @@ def main():
         if v["type"] == "boolean":
             p = scaler.scale(v["probability"])
             conf = max(p, 1 - p)
-        pairs.append((conf, _pred_label(v) == gold, v["type"]))
+        ok = _pred_label(v) == gold
+        pairs.append((conf, ok) if args.pooled else (conf, ok, v["type"]))
     cal = SelectiveCalibrator.fit(pairs, target_risk=args.target_risk, delta=args.delta)
     cal.temperature = T
     out = args.out or str(Path(model_id) / "calibrator.json")
