@@ -1,9 +1,9 @@
 """Specialize GLiNER2.5-Decide on your decision rows.
 
-LoRA by default (measured peak ~3.8 GB on a 12 GB GPU); `--mode full` fine-tunes
-all parameters (~8.3 GB). The adapter is merged into the base and saved as a
-standalone directory, so a plain `Haruspex.load(<dir>)` / `AutoExtractor
-.from_pretrained(<dir>)` loads it with no extra steps.
+LoRA (measured peak ~3.8 GB on a 12 GB GPU). The artifact is the small adapter
+under `<out>/final` plus a `haruspex.json` manifest; `Haruspex.load(<out>)`
+reattaches it to the reused base. (`--mode full` is refused: gliner2 2.1 cannot
+reload what it saves.)
 
   python -m haruspex.train --train data/security_seed.jsonl --out runs/sec --epochs 3
 
@@ -23,6 +23,13 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
           batch_size=4, grad_accum=1, lora_r=16, lora_alpha=32, logging_steps=5,
           grad_checkpoint=None, max_len=None, seed=0, sanity_gate=True,
           gate_domain="web", save_every=0, resume=False):
+    if mode != "lora":
+        # NOTE (ceiling): a full fine-tune trains fine, but merge/save writes an
+        # incompatible span-head checkpoint in gliner2 2.1 that will not reload.
+        # Refuse up front rather than after hours of training. Upgrade path: a
+        # standalone save once the gliner2 save/merge bug is fixed.
+        raise NotImplementedError(
+            "full-mode reload is blocked by a gliner2 2.1 save bug — use --mode lora")
     import torch
     from gliner2 import GLiNER2
     from gliner2.training.trainer import GLiNER2Trainer, TrainingConfig
@@ -65,13 +72,6 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
             print(f"[train] resuming from {resume_path}", flush=True)
             train_kwargs["resume_from_checkpoint"] = resume_path
     trainer.train(**train_kwargs)
-    if mode != "lora":
-        # NOTE (ceiling): a full fine-tune trains fine, but merge/save writes an
-        # incompatible span-head checkpoint in gliner2 2.1 that will not reload.
-        # LoRA is the supported, loadable artifact (and 30 MB vs 2 GB). Upgrade
-        # path: a standalone save once the gliner2 save/merge bug is fixed.
-        raise NotImplementedError(
-            "full-mode reload is blocked by a gliner2 2.1 save bug — use --mode lora")
     # Artifact = the small LoRA adapter the trainer saved under <out>/final, plus
     # a manifest. Haruspex.load() reattaches it to the reused base at inference.
     (Path(out) / "haruspex.json").write_text(
@@ -178,7 +178,7 @@ def sanity_check(model_dir: str, device: str = "cpu", domain: str = "web", probe
 def main():
     ap = argparse.ArgumentParser(description="Specialize GLiNER2.5-Decide on decision rows")
     ap.add_argument("--train", required=True, help="labeled JSONL")
-    ap.add_argument("--out", required=True, help="output dir (standalone, merged model)")
+    ap.add_argument("--out", required=True, help="output dir (LoRA adapter + haruspex.json)")
     ap.add_argument("--base", default="", help="base model id/dir (default fastino/GLiNER2.5-Decide)")
     ap.add_argument("--mode", choices=["lora", "full"], default="lora")
     ap.add_argument("--epochs", type=int, default=3)
@@ -209,7 +209,7 @@ def main():
                 grad_checkpoint=args.grad_checkpoint or None, max_len=args.max_len or None,
                 seed=args.seed, sanity_gate=not args.no_sanity_gate, gate_domain=args.gate_domain,
                 save_every=args.save_every, resume=args.resume)
-    print(f"[train] saved standalone model -> {out}")
+    print(f"[train] saved adapter -> {out}")
     print("[train] fit a calibrator next: python -m haruspex.calibrate "
           f"--model {out} --data <val.jsonl>")
 

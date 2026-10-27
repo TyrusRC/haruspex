@@ -66,8 +66,8 @@ class Haruspex:
         if device and device != "cpu":
             try:
                 model.to(device) if hasattr(model, "to") else model.cuda()
-            except Exception:  # noqa: BLE001 - fall back to CPU if the move fails
-                pass
+            except Exception as e:  # noqa: BLE001 - fall back to CPU, but say so
+                warnings.warn(f"haruspex: could not move model to {device} ({e}); running on CPU")
         if hasattr(model, "eval"):
             # Inference must run in eval mode: a model left in train mode keeps
             # dropout active, which was found live to perturb borderline scores
@@ -119,8 +119,8 @@ class Haruspex:
         res = out.get("decision")
         if isinstance(res, dict):
             return res.get("label", ""), float(res.get("confidence", 0.0))
-        # format_results without confidence returns the bare label
-        return (res or ""), 1.0
+        # a bare label carries no confidence: report none rather than a free pass
+        return (res or ""), 0.0
 
     def decide(self, row: dict) -> dict:
         """Return a typed, calibrated verdict for one decision row."""
@@ -154,8 +154,14 @@ class Haruspex:
                 # unsure -> fall through to the model
         label, conf = self._classify(row)
         if t == "boolean":
-            p_yes = conf if label == "yes" else 1.0 - conf
-            verdict = {"type": "boolean", "label": label, "probability": round(p_yes, 6),
+            p_yes = None   # unscored label: no probability to report
+            if conf > 0.0:
+                p_yes = conf if label == "yes" else 1.0 - conf
+                if self.calibrator is not None:
+                    p_yes = self.calibrator.scale(p_yes)   # temperature: monotone, label kept
+                    conf = max(p_yes, 1.0 - p_yes)
+                p_yes = round(p_yes, 6)
+            verdict = {"type": "boolean", "label": label, "probability": p_yes,
                        "confidence": round(conf, 6)}
         elif t == "choice":
             verdict = {"type": "choice", "choice": label, "confidence": round(conf, 6),
@@ -165,6 +171,7 @@ class Haruspex:
             idx = levels.index(label) if label in levels else -1
             verdict = {"type": "score", "score": idx, "level": label,
                        "confidence": round(conf, 6), "probabilities": {label: round(conf, 6)}}
+        verdict["source"] = "model"
         if self.calibrator is not None:
-            verdict.update(self.calibrator.apply(conf))
+            verdict.update(self.calibrator.apply(conf, t))
         return verdict

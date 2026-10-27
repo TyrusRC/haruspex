@@ -37,6 +37,11 @@ import os
 # 64 KB covers any real finding/code-snippet/IaC-block with headroom; still-oversized
 # content should be summarized/truncated by the caller, not sent whole.
 MAX_STATE_CHARS = 65536
+# The raw body is capped BEFORE it is parsed (the state cap alone runs after json.loads
+# has already materialised the whole body), and so is the per-request question count —
+# each question is one encoder pass.
+MAX_BODY_BYTES = 512 * 1024
+MAX_QUESTIONS = 64
 
 # Optional hardening, each off by default (the loopback-trust model stays the default):
 #   HARUSPEX_API_KEY=<secret>     require `Authorization: Bearer <secret>` on /v1/evaluate.
@@ -47,6 +52,7 @@ MAX_STATE_CHARS = 65536
 #                                  source. The raw `state` is NOT logged (it may be
 #                                  sensitive finding/code content) — only its length.
 import collections
+import hmac
 import threading
 import time
 
@@ -105,6 +111,7 @@ class Router:
         # Default must be a registered domain; fall back to the first registered.
         self.default = default if default in adapters else next(iter(adapters))
         self._cache: dict[str, object] = {}
+        self._load_lock = threading.Lock()   # concurrent first requests load ONE copy
 
     def route(self, domain: str | None, state="") -> tuple[str, str]:
         """Pick the served domain and say how. Returns (domain, source):
@@ -141,11 +148,13 @@ class Router:
     def model(self, domain: str | None):
         d = self.resolve(domain)
         if d not in self._cache:
-            from .config import pick_device
-            from .model import Haruspex
-            # a spec may name a subfolder in a multi-domain repo: repo#subfolder
-            path, _, sub = self.adapters[d].partition("#")
-            self._cache[d] = Haruspex.load(path, device=pick_device(), subfolder=sub)
+            with self._load_lock:
+                if d not in self._cache:
+                    from .config import pick_device
+                    from .model import Haruspex
+                    # a spec may name a subfolder in a multi-domain repo: repo#subfolder
+                    path, _, sub = self.adapters[d].partition("#")
+                    self._cache[d] = Haruspex.load(path, device=pick_device(), subfolder=sub)
         return self._cache[d]
 
 
@@ -170,6 +179,7 @@ def build_app(adapters: dict[str, str], default: str = "web"):
     # Built on Starlette directly (FastAPI's base): route handlers receive the
     # request positionally, so there is no body/query heuristic across versions.
     from starlette.applications import Starlette
+    from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
@@ -208,17 +218,56 @@ def build_app(adapters: dict[str, str], default: str = "web"):
         from starlette.responses import PlainTextResponse
         return PlainTextResponse("\n".join(lines) + "\n")
 
+    def _bad(status, msg):
+        with _METRICS_LOCK:
+            _METRICS[f"requests_rejected_{status}"] += 1
+        return JSONResponse({"error": msg}, status_code=status)
+
+    async def _read_body(request) -> bytes | None:
+        """The raw body, or None once it passes MAX_BODY_BYTES (stops reading there)."""
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf += chunk
+            if len(buf) > MAX_BODY_BYTES:
+                return None
+        return bytes(buf)
+
+    def _answer(m, state, questions):
+        answers = {}
+        for name, q in questions.items():
+            if not isinstance(q, dict):
+                answers[name] = {"error": "question must be an object"}
+                continue
+            try:
+                answers[name] = m.decide(_question_to_row(state, q))
+            except ValueError as e:
+                with _METRICS_LOCK:
+                    _METRICS["requests_errors"] += 1
+                answers[name] = {"error": str(e)}
+        return answers
+
     async def evaluate(request):
         if api_key:
             auth = request.headers.get("authorization", "")
-            if auth != f"Bearer {api_key}":
+            # constant-time: a plain != leaks the key's matching prefix length via timing
+            if not hmac.compare_digest(auth.encode(), f"Bearer {api_key}".encode()):
                 with _METRICS_LOCK:
                     _METRICS["requests_unauthorized"] += 1
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
-        body = await request.json()
+        raw = await _read_body(request)
+        if raw is None:
+            return _bad(413, f"body larger than {MAX_BODY_BYTES} bytes")
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            return _bad(400, "body is not valid JSON")
+        if not isinstance(body, dict) or not isinstance(body.get("questions") or {}, dict):
+            return _bad(400, "body must be an object with a 'questions' object")
         state = body.get("state", "")
         state_len = len(state) if isinstance(state, str) else len(json.dumps(state, default=str))
         questions = body.get("questions") or {}
+        if len(questions) > MAX_QUESTIONS:
+            return _bad(413, f"too many questions ({len(questions)} > {MAX_QUESTIONS})")
         with _METRICS_LOCK:
             _METRICS["requests_total"] += 1
         if state_len > MAX_STATE_CHARS:
@@ -232,18 +281,14 @@ def build_app(adapters: dict[str, str], default: str = "web"):
             return JSONResponse({"model": body.get("model") or served_name,
                                  "domain": None, "domain_source": "rejected",
                                  "answers": answers}, status_code=413)
-        domain, source = router.route(body.get("domain"), state)
+        hint = body.get("domain")
+        domain, source = router.route(hint if isinstance(hint, str) else None, state)
         with _METRICS_LOCK:
             _METRICS[f"requests_domain_{domain}"] += 1
-        m = router.model(domain)
-        answers = {}
-        for name, q in questions.items():
-            try:
-                answers[name] = m.decide(_question_to_row(state, q))
-            except ValueError as e:
-                with _METRICS_LOCK:
-                    _METRICS["requests_errors"] += 1
-                answers[name] = {"error": str(e)}
+        # model loading and inference are blocking: keep them off the event loop so one
+        # slow request does not stall every other connection
+        m = await run_in_threadpool(router.model, domain)
+        answers = await run_in_threadpool(_answer, m, state, questions)
         _audit(domain, source, questions, answers)
         return JSONResponse({"model": body.get("model") or served_name,
                              "domain": domain, "domain_source": source, "answers": answers})
