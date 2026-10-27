@@ -1,15 +1,23 @@
 [Unit]
 Description=Haruspex decision server
 After=network.target
+# Restart-rate cap (must live in [Unit]; systemd ignores it under [Service]).
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
-# Edit these three for your deployment:
-Environment=HARUSPEX_ADAPTERS=web=/opt/haruspex/web,mobile=/opt/haruspex/mobile,network=/opt/haruspex/network,llm=/opt/haruspex/llm,cloud=fastino/GLiNER2.5-Decide
+# Edit these for your deployment. Each adapter dir should hold a calibrator.json
+# (python -m haruspex.calibrate), or that domain never abstains.
+Environment=HARUSPEX_ADAPTERS=web=/opt/haruspex/web,mobile=/opt/haruspex/mobile,network=/opt/haruspex/network,llm=/opt/haruspex/llm,cloud=/opt/haruspex/cloud
 Environment=HARUSPEX_DEFAULT_DOMAIN=web
-# Optional hardening — uncomment what you need; see ../docs/DEPLOY.md.
-# Environment=HARUSPEX_API_KEY=<secret>                 # require Bearer auth
-# Environment=HARUSPEX_AUDIT_LOG=/var/log/haruspex/audit.jsonl
+# Hub downloads (adapter repo ids, the base model) need a writable cache under the sandbox.
+Environment=HF_HOME=/opt/haruspex/.cache/huggingface
+# Secrets go in a root-owned, mode-600 file, never in this unit: Environment= lines are
+# readable by any local user via `systemctl show`. One VAR=value per line, e.g.
+#   HARUSPEX_API_KEY=<secret>                         # require Bearer auth
+#   HARUSPEX_AUDIT_LOG=/var/log/haruspex/audit.jsonl
+EnvironmentFile=-/etc/haruspex/haruspex.env
 WorkingDirectory=/opt/haruspex
 ExecStart=/opt/haruspex/.venv/bin/python -m haruspex.serve --host 127.0.0.1 --port 3000
 
@@ -19,8 +27,6 @@ ExecStart=/opt/haruspex/.venv/bin/python -m haruspex.serve --host 127.0.0.1 --po
 # persistently-crashing process doesn't spin the host.
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 # The service holds the base model + N adapters in RAM/VRAM (~2 GB each on CPU) and
 # does blocking inference inline — give it real memory headroom, not a tight cgroup.
@@ -30,7 +36,7 @@ MemoryHigh=16G
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/log/haruspex
+ReadWritePaths=/var/log/haruspex /opt/haruspex/.cache
 
 User=haruspex
 Group=haruspex

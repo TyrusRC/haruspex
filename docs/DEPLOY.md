@@ -15,6 +15,10 @@ process, set it:
 HARUSPEX_API_KEY=<secret> haruspex-serve --adapters ...
 ```
 
+Under systemd, put it in `/etc/haruspex/haruspex.env` (root-owned, `chmod 600`), which
+the unit loads via `EnvironmentFile=`. Don't put it in an `Environment=` line, because
+`systemctl show` prints those to any local user.
+
 Every `/v1/evaluate` / `/v1/systemone` request then needs `Authorization: Bearer
 <secret>`, or it gets a `401`. This is a shared secret, not per-caller auth — fine for
 "one trusted network, several callers," not a substitute for a real multi-tenant auth
@@ -46,7 +50,9 @@ systemctl daemon-reload
 systemctl enable --now haruspex
 ```
 
-Edit the `Environment=` lines for your adapter paths first. Without this (or an
+Edit the `Environment=` lines for your adapter paths first, and create
+`/opt/haruspex/.cache` (owned by the `haruspex` user) if any adapter or the base model
+loads from the Hub. Without this (or an
 equivalent — a container restart policy, a process manager), a crash is permanent until
 someone notices.
 
@@ -57,8 +63,10 @@ someone notices.
   probe, not just a liveness check, if your orchestrator supports the distinction (a
   cold start can take tens of seconds to minutes depending on device and adapter count).
 - `GET /metrics` — plain-text counters (`haruspex_requests_total`,
-  `haruspex_requests_domain_<name>`, `haruspex_requests_rejected_oversized`,
-  `haruspex_requests_errors`, `haruspex_requests_unauthorized`). No new dependency; a
+  `haruspex_requests_domain_<name>`, `haruspex_requests_rejected_oversized` (state too
+  long), `haruspex_requests_rejected_400` (malformed body), `haruspex_requests_rejected_413`
+  (body or question count over the limit), `haruspex_requests_errors`,
+  `haruspex_requests_unauthorized`). No new dependency; a
   Prometheus scrape config can point at this path directly.
 - `HARUSPEX_AUDIT_LOG=<path>` — one JSONL line per request: timestamp, resolved domain,
   routing source, and each question's label/probability/source. **The raw `state` is
@@ -78,6 +86,30 @@ latency was ~0.3–0.6s warm. If you expect more than occasional/interactive tra
   for the number of domains you actually serve, not all five if you only need two.
 - This project has not load-tested GPU serving under sustained concurrent traffic from
   multiple independent clients; treat the numbers above as the known floor, not a ceiling.
+
+## Calibration per domain
+
+Abstention needs a `calibrator.json` in each adapter directory. Without one, that domain
+answers every question and never abstains. Fit it on the domain's held-out cal split:
+
+```sh
+python -m haruspex.calibrate --model runs/<domain> --data data/<domain>_cal.jsonl --target-risk 0.2
+# add --pooled when the cal split is too small to certify each decision type on its own
+```
+
+The calibrator prints a warning for each type it cannot certify; those questions will
+abstain.
+
+## Request limits
+
+These are hard limits; anything larger is rejected before inference runs:
+
+- body: 512 KiB, checked before parsing
+- `state`: 64 K characters
+- questions: 64 per request
+
+Callers should summarise or truncate large evidence and batch many questions across
+several requests.
 
 ## Adapter versioning and rollback
 
