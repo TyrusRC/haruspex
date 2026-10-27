@@ -1,5 +1,9 @@
 # Haruspex comparison card
 
+> **v0.1 numbers, re-measurement pending.** Measured on a shuffle-based split that moved
+> rows between train and test whenever the dataset grew, with hyperparameters and the
+> calibrator both fit on the cal split. Treat as indicative; see the README "Measured" note.
+
 Haruspex (a ~494M specialized decision adapter) vs. baselines on the **same 91-row
 security held-out test** (`data/security_test.jsonl`, never seen in training or
 calibration). The point: show where a tiny, calibrated, specialized model wins and where

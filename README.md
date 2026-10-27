@@ -28,14 +28,24 @@ The contribution is the layer around the reused model:
 1. **A typed decision contract** (boolean / choice / score) over `classify_text`.
 2. **Security specialization** — a small LoRA adapter trained on your decisions
    (an example offensive+defensive data pack is included).
-3. **Selective calibration** — split-conformal abstention: accept a verdict only when
-   its confidence clears a threshold fitted to hold the error *among accepted items* at
-   your target risk; otherwise abstain. A raw confidence is not a risk control; this is.
+3. **Selective calibration** — Learn-then-Test abstention: accept a verdict only when
+   its confidence clears a per-type threshold *certified* on a held-out calibration split
+   (exact binomial test, Bonferroni over a fixed grid) so that, with probability ≥ 1−δ,
+   the error *among accepted items* stays within your target risk; otherwise abstain.
+   Too little evidence fails closed (abstain). A raw confidence is not a risk control;
+   this is.
 
 The artifact you ship is a **30 MB LoRA adapter + a calibrator**, reattached to the
 reused base at load time — not a 2 GB copy.
 
 ## Measured (RTX 3060, 12 GB, WSL2)
+
+> **Re-measurement pending (v0.2).** The numbers below predate two fixes: the v0.1
+> calibrator picked its threshold by raw empirical error (no finite-sample guarantee — on
+> data with known risk it broke the budget ~49 % of the time), and the shuffle-based split
+> moved rows between train and test whenever rows were added. The `runs/sec` adapter scores
+> 100 % on today's test split because it trained on most of it. Splits are now
+> content-hashed (stable as data grows) and the numbers will be re-measured on them.
 
 **Inference.** Base GLiNER2.5-Decide, no training, on 34 security decisions:
 boolean 0.62 · choice 0.55 · score 0.20 · overall **0.47**. ~2.0 GB VRAM,
@@ -63,8 +73,9 @@ split with hyperparameters selected on **cal** (never on test):
 | Llama-3.1-8B-Instruct (prompted) | 0.70 | — | — |
 | **Haruspex** LoRA, tuned (8 epochs, rank 16) | **0.88** | 0.12 | 0.12 |
 
-The calibrator is fit on the held-out **cal** set (not train), so its guarantee holds
-out-of-sample: at target risk 0.2 the adapter accepts the whole test set at accepted
+The calibrator was fit on the held-out **cal** set (not train) — but that same set also
+chose the hyperparameters, which voids any guarantee; v0.2 adds a separate **dev** split
+for tuning. At target risk 0.2 the adapter accepted the whole test set at accepted
 error 0.12. The headline: a ~494M specialized adapter **beats a prompted 8B general model
 (0.88 vs 0.70) at ~1/16 the size** and comparable latency, and lifts the base encoder from
 0.60. Larger sets need more epochs — at this size 8 epochs beat 5 (which underfit); rank
@@ -83,11 +94,12 @@ cases drove false positives toward zero on a held-out split:
    *confident* (P≈1.0) and confined to `off_cve_applicable` — fine-grained CVE version/OS
    logic a 0.5B encoder won't learn and an abstention threshold can't catch. Those questions
    now route to a deterministic resolver that answers only when confident and otherwise
-   **defers** (abstain → external KEV/NVD lookup). On the held-out set it answered CVE
-   applicability at **100 % accuracy (0 wrong)**, deferring the rest — so the model emits
-   **no** CVE false positives. `CveResolver` is pluggable (inject praetor's `lookup_cve`);
-   the safety property is defer-on-uncertainty, so a coverage gap causes an abstention, never
-   a false positive (unit-tested in `tests/test_cve.py`).
+   **defers** (abstain → external KEV/NVD lookup). A version only counts when it is written
+   right after the product's name, backported fixes are encoded per release line, and a
+   product, version or distro package it cannot pin down defers rather than answering "not
+   affected". On the shipped dataset it decides 54 of 66 CVE questions with 0 wrong.
+   `CveResolver` is pluggable (inject praetor's `lookup_cve`); the safety property is
+   defer-on-uncertainty in both directions (unit-tested in `tests/test_cve.py`).
 
 Net on the 120-row test: selective coverage 0.96, accepted accuracy 0.90, boolean precision
 0.97, CVE false positives 0. The model is reserved for judgment (triage/severity/routing/
@@ -133,16 +145,19 @@ print(m.decide({"type": "boolean",
 Specialize, calibrate, evaluate, serve:
 
 ```sh
-python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15   # train / cal / held-out test
+python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15 --dev-frac 0.15  # train / cal / dev / test
 python -m haruspex.train     --train data/security_train.jsonl --out runs/sec --epochs 8 --seed 0
+# choose epochs / rank / seed by eval on *_dev.jsonl — never on cal or test
 # training is seeded (reproducible; retry a bad run with a new --seed) and ends with a
 # sanity-gate: a fixed discrimination probe that RAISES if the checkpoint collapsed
 # (every output ~0.5) instead of shipping a degenerate model. Override with --no-sanity-gate.
 # real-scale / long rows on a 12 GB GPU: add memory flags
 # python -m haruspex.train   --train data/security_train.jsonl --out runs/sec \
 #     --batch 2 --grad-accum 4 --grad-checkpoint --max-len 192
-python -m haruspex.calibrate --model runs/sec --data data/security_cal.jsonl --target-risk 0.2
-python -m haruspex.eval      --model runs/sec --data data/security_test.jsonl  # held-out: Accuracy/ECE/Brier + coverage/risk
+python -m haruspex.calibrate --model runs/sec --data data/security_cal.jsonl --target-risk 0.2 \
+    --delta 0.1 --temp-data data/security_dev.jsonl   # per-type certified thresholds (+ boolean temperature)
+python -m haruspex.eval      --model runs/sec --data data/security_test.jsonl  # held-out: accuracy ± 95% CI, ECE, Brier,
+                                                                           # per-source split, coverage/risk
 python -m haruspex.serve     --model runs/sec --port 3000               # POST /v1/systemone · /v1/evaluate
 ```
 
@@ -170,15 +185,17 @@ example. The model itself is general; point it at your own decisions too.
   telemetry selection.
 
 Every row carries `side` / `category` / `id` tags. The dataset is gated clean, and a
-stratified held-out split keeps a test set the model never trains on:
+content-hashed split keeps a test set the model never trains on — a row's split depends
+only on the row itself, so adding rows never moves one from train into test:
 
 ```sh
 python scripts/validate_data.py data/security.jsonl --build   # schema + dupes + balance; exits non-zero on error
-python scripts/split_data.py    data/security.jsonl --test-frac 0.2 --cal-frac 0.15   # train / cal / held-out test
+python scripts/split_data.py    data/security.jsonl --test-frac 0.2 --cal-frac 0.15 --dev-frac 0.15
 ```
 
-Use `*_cal.jsonl` to fit the calibrator and keep `*_test.jsonl` for the final number —
-fitting a selective threshold on train gives a false guarantee out-of-sample.
+Each split has one job: `*_train` fits the adapter, `*_dev` chooses hyperparameters,
+`*_cal` fits the calibrator (and nothing else — reusing it for tuning voids the
+guarantee), `*_test` reports the final number once.
 
 ## Serving (Jev / TypeSafe HTTP contract)
 
@@ -197,8 +214,18 @@ POST /v1/evaluate  (or /v1/systemone)
                              "criteria": {true,false} | {opt:desc} | [low,high] } } }
 ```
 
-Each answer carries the verdict plus `accept` / `abstain` when a calibrator is loaded.
-The response echoes the `domain` that answered.
+Each answer carries the verdict plus `accept` / `abstain` when a calibrator is loaded,
+and a `source`: `model`, `cve_lookup` / `cloud_rule` (a deterministic resolver answered),
+or `model_declined` (abstained and routed to an external lookup). The response echoes the
+`domain` that answered.
+
+**Limits and hardening.** The raw body is capped at 512 KiB *before* it is parsed, `state`
+at 64 K characters and a request at 64 questions (each question is one encoder pass) —
+all rejected with `413`. Malformed JSON or a non-object body is a `400`, a malformed
+question is a per-question `error`, never a `500`. Inference runs off the event loop, and
+concurrent first requests to a domain load its model once. Opt-in:
+`HARUSPEX_API_KEY` (bearer key, compared in constant time) and `HARUSPEX_AUDIT_LOG`
+(one JSONL line per request; the raw `state` is never logged).
 
 **One endpoint, any domain (the router).** Serve several per-domain adapters behind the
 same endpoint and let the request's `domain` field pick the adapter:
@@ -221,6 +248,23 @@ The shared base is loaded once *per domain* (gliner2 does not yet expose single-
 adapter switching), so the router's win over running one server per domain is the single
 endpoint and routing — a mixed-domain caller (e.g. praetor) hits one URL. Each tool sends
 its own domain: a mobile scanner sends `"domain":"mobile"`, web/code tools send `"web"`.
+
+## Benchmark against an LLM
+
+`scripts/bench.py` runs Haruspex and any OpenAI-compatible model (e.g. a local
+`llama-server`) on the same rows. The LLM gets the same state and option descriptions,
+greedy decoding, output constrained to the valid labels, and optional same-category
+worked examples drawn from the **train** split only:
+
+```sh
+llama-server -m Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf -ngl 99 -c 8192 --port 8088
+python scripts/bench.py --data data/security_test.jsonl --model runs/sec \
+    --llm-url http://127.0.0.1:8088 --shots 3 --shots-from data/security_train.jsonl
+```
+
+It prints both sides' metrics (accuracy with a 95 % interval, per-source split), a
+per-category table and an exact paired McNemar p-value: a gap is only a real gap when
+p < 0.05.
 
 ## Publish to Hugging Face
 
@@ -276,7 +320,8 @@ one endpoint per domain.
 `data/mobile.jsonl` (203 rows, MASVS-aligned Android/iOS) trains a **dedicated mobile
 adapter** (published as the `mobile/` subfolder of
 [`TyrusRC/haruspex`](https://huggingface.co/TyrusRC/haruspex)):
-on its held-out split it scores **accuracy 0.98, recall 1.00** (no missed findings) and
+on its v0.1 held-out split it scored **accuracy 0.98, recall 1.00** (no missed findings;
+re-measurement on stable splits pending) and
 cleanly separates real findings (hardcoded secret, debuggable, exported component, ATS-off,
 WebView bridge → ~1.0) from hardened ones (Keystore, `exported=false`,
 EncryptedSharedPreferences → ~0.0) — concepts the shared model could not learn. Serve both
@@ -299,14 +344,26 @@ adapter.)
 
 ## Status
 
-The toolkit (specialize → calibrate → eval → serve) runs end-to-end on a 12 GB RTX 3060.
-Tuned specialization helps (base 0.60 → LoRA 0.88 on held-out, beating a prompted 8B at
-0.70). The security dataset includes DAST-format scanner adjudication data for real/noise
-discrimination, CVE resolver with 60 entries, and cloud/network deterministic routers.
+**v0.2 (current).** The toolkit (specialize → calibrate → eval → serve → bench) runs
+end-to-end on a 12 GB RTX 3060. v0.2 fixed the parts that make safety claims:
+
+- the calibrator certifies its threshold (Learn-then-Test) and fails closed;
+- the CVE and cloud resolvers defer instead of answering confidently on evidence they
+  cannot pin down;
+- splits are content-hashed, with a separate dev split for tuning.
+
+**Not yet re-measured.** v0.1's headline (base 0.60 → LoRA 0.88, beating a prompted 8B at
+0.70) came from a split that has since been shown to leak, so it is indicative only. The
+first retrain on the new 438-row train split collapsed (every output 0.5) and was refused
+by the sanity gate; a re-run with other seeds, a dev-selected recipe and then the paired
+8B benchmark come next. Coverage today is offensive (web/scanner, mobile, cloud, network,
+LLM) and defensive SOC; digital forensics / incident response is not covered yet.
+
 Known limits: a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
-memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* (beyond
-abstention) wait on a gliner2 per-label-score fix. Contributions and independent
-evaluations welcome — run `python -m unittest discover tests` before a PR.
+memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* and
+temperature scaling beyond boolean wait on gliner2 returning per-label scores from
+`classify_text`. Contributions and independent evaluations welcome — run
+`python -m unittest discover tests` before a PR.
 
 ## License
 
