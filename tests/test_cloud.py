@@ -37,6 +37,48 @@ class CloudResolverTest(unittest.TestCase):
                   "Ensure Create before destroy for API Gateway"]:
             self.assertIs(self.r.classify(s), False, s)
 
+    def test_passed_status_is_not_a_finding(self):
+        # the scanner's own PASSED status settles polarity, whatever the check title says
+        for s in ["PASSED: Ensure the S3 bucket has encryption enabled",
+                  "CKV_AWS_20 passed: S3 bucket ACL is private",
+                  "Check: CKV_AWS_24 result: PASSED - Ensure no security group allows ingress from 0.0.0.0/0 to port 22"]:
+            self.assertIs(self.r.classify(s), False, s)
+
+    def test_negated_exposure_is_not_a_finding(self):
+        for s in ["RDS instance is not publicly accessible",
+                  "The admin API is not open to the internet"]:
+            self.assertIsNot(self.r.classify(s), True, s)
+
+    def test_negated_keywords_do_not_count(self):
+        for s in ["the password is referenced via jsondecode(...) at apply time, never hardcoded",
+                  "KMS key policy restricts kms:Decrypt to a single role ARN; no wildcard principals",
+                  "Lambda reads its password from Secrets Manager; no secrets are in env vars"]:
+            self.assertIsNot(self.r.classify(s), True, s)
+        # a negated hardened phrase is not hardening
+        for s in ["tfsec aws-s3-enable-bucket-encryption (HIGH): Bucket does not have server-side encryption enabled",
+                  "tfsec (HIGH): RDS instance does not have storage encryption enabled"]:
+            self.assertIs(self.r.classify(s), True, s)
+
+    def test_justified_exposure_defers(self):
+        # the exposure is stated as intended: a judgment call for the model, not a rule
+        self.assertIsNone(self.r.classify(
+            'aws_security_group ingress { from_port=443 cidr_blocks=["0.0.0.0/0"] } on a public ALB '
+            "— HTTPS open to the internet as intended for a public site"))
+
+    def test_conflicting_failed_check_defers(self):
+        # an ops control ('description') on a security resource: not a security finding
+        self.assertIsNot(self.r.classify(
+            "Checkov CKV_AWS_23 FAILED on aws_security_group.app_sg: Ensure every security group "
+            "and rule has a description"), True)
+
+    def test_more_exposed_ports(self):
+        self.assertIs(self.r.classify("SG allows 11211 (memcached) from 0.0.0.0/0. The cache is reachable"), True)
+
+    def test_keywords_match_whole_words(self):
+        # 'tag' must not fire inside 'staged'; 'iam' not inside 'diameter'
+        self.assertIsNone(self.r.classify("Checkov FAILED on the staged rollout config"))
+        self.assertIsNone(self.r.classify("Checkov FAILED: diameter check on the pipeline"))
+
     def test_defers_when_unsure(self):
         self.assertIsNone(self.r.classify("some entirely unrelated sentence about weather"))
 
