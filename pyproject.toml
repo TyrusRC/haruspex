@@ -1,6 +1,6 @@
 [project]
 name = "haruspex"
-version = "0.1.0"
+version = "0.2.0"
 description = "A small, local, calibrated decision layer for security operations — reuses GLiNER2.5-Decide, adds typed boolean/choice/score verdicts and selective (abstaining) calibration."
 license = "Apache-2.0"
 readme = "README.md"

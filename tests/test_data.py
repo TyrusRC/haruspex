@@ -89,5 +89,36 @@ class TextAndLoadTest(unittest.TestCase):
             load_rows(p)
 
 
+class SplitTest(unittest.TestCase):
+    def test_dev_split_is_disjoint_from_cal_and_test(self):
+        import sys
+        from pathlib import Path as _P
+        sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "scripts"))
+        from split_data import split
+        rows = [{"category": c, "type": "boolean", "state": f"{c}{i}", "question": "q"}
+                for c in ("a", "b") for i in range(40)]
+        train, cal, test, dev = split(rows, 0.2, 0, cal_frac=0.15, dev_frac=0.15)
+        ids = [{r["state"] for r in p} for p in (train, cal, test, dev)]
+        self.assertEqual(sum(map(len, ids)), 80)
+        self.assertEqual(len(set().union(*ids)), 80)          # no row in two splits
+        self.assertTrue(all(len(x) > 0 for x in ids))
+
+    def test_adding_rows_never_moves_existing_rows(self):
+        # the contamination bug: appending rows reshuffled the split, so rows an adapter
+        # trained on landed in a later "test" set
+        import sys
+        from pathlib import Path as _P
+        sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "scripts"))
+        from split_data import split
+        rows = [{"category": c, "type": "boolean", "state": f"{c}{i}", "question": "q"}
+                for c in ("a", "b") for i in range(60)]
+        more = rows + [{"category": "a", "type": "boolean", "state": f"new{i}", "question": "q"}
+                       for i in range(30)]
+        before = split(rows, 0.2, 0, cal_frac=0.15, dev_frac=0.15)
+        after = split(more, 0.2, 0, cal_frac=0.15, dev_frac=0.15)
+        for b, a in zip(before, after):
+            self.assertLessEqual({r["state"] for r in b}, {r["state"] for r in a})
+
+
 if __name__ == "__main__":
     unittest.main()

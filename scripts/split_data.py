@@ -1,47 +1,54 @@
-"""Deterministic, stratified train/test split for a decision dataset.
+"""Deterministic, stable train/dev/cal/test split for a decision dataset.
 
-Stratifies by (side, category, type) so the held-out set covers every category,
-and is seeded so the split is reproducible. The test set is never trained on — it
+Each row's split is a hash of its own content (and the seed), so the split is
+reproducible AND stable as the dataset grows. The test set is never trained on — it
 is the only honest source of a generalization number.
 
-  python scripts/split_data.py data/security.jsonl --test-frac 0.2
-  # -> data/security_train.jsonl + data/security_test.jsonl
+Four roles, each used for exactly one thing:
+  train  fit the adapter
+  dev    choose epochs / rank / seed (and fit temperature)
+  cal    fit the selective calibrator — never used for tuning, or its guarantee breaks
+  test   report the final number, once
+
+  python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15 --dev-frac 0.15
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import random
 import sys
-from collections import defaultdict
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from haruspex.data import load_rows  # noqa: E402
 
 
-def split(rows, test_frac: float, seed: int, cal_frac: float = 0.0):
-    """Stratified split by (side, category, type). With cal_frac > 0 it is a
-    three-way train/cal/test split; the calibrator is fit on cal and test stays
-    clean (fitting a selective threshold on train gives a false guarantee)."""
-    groups: dict[tuple, list] = defaultdict(list)
+def _unit(row: dict, seed: int) -> float:
+    """A stable uniform draw in [0, 1) from the row's own content: the same row lands in
+    the same split every time, however many rows are added around it."""
+    key = json.dumps([seed, row.get("type"), row.get("state"), row.get("question")],
+                     sort_keys=True, ensure_ascii=False, default=str)
+    return int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:8], "big") / 2 ** 64
+
+
+def split(rows, test_frac: float, seed: int, cal_frac: float = 0.0, dev_frac: float = 0.0):
+    """Content-hashed split into train/cal/test/dev (cal and dev empty when their
+    fraction is 0). Returns (train, cal, test, dev).
+
+    Membership depends only on the row and the seed, never on the rest of the file:
+    appending rows can never move a row an adapter trained on into test (the earlier
+    shuffle-based split did exactly that). Category balance holds in expectation.
+    NOTE (ceiling): a category with a handful of rows may get no test row; check the
+    printed per-split counts, and add rows to that category rather than reshuffling."""
+    cuts = (test_frac, test_frac + cal_frac, test_frac + cal_frac + dev_frac)
+    train, cal, test, dev = [], [], [], []
     for r in rows:
-        groups[(r.get("side", "?"), r.get("category", "?"), r.get("type", "?"))].append(r)
-    rng = random.Random(seed)
-    train, cal, test = [], [], []
-    for key in sorted(groups):
-        g = groups[key][:]
-        rng.shuffle(g)
-        n = len(g)
-        n_test = max(1, round(n * test_frac)) if n >= 2 else 0
-        n_cal = max(1, round(n * cal_frac)) if (cal_frac > 0 and n - n_test >= 2) else 0
-        test.extend(g[:n_test])
-        cal.extend(g[n_test:n_test + n_cal])
-        train.extend(g[n_test + n_cal:])
-    for part in (train, cal, test):
-        rng.shuffle(part)
-    return train, cal, test
+        u = _unit(r, seed)
+        (test if u < cuts[0] else cal if u < cuts[1] else dev if u < cuts[2] else train).append(r)
+    return train, cal, test, dev
 
 
 def main():
@@ -50,21 +57,29 @@ def main():
     ap.add_argument("--test-frac", type=float, default=0.2)
     ap.add_argument("--cal-frac", type=float, default=0.0,
                     help="held-out calibration fraction (>0 writes a *_cal.jsonl)")
+    ap.add_argument("--dev-frac", type=float, default=0.0,
+                    help="held-out dev fraction for choosing hyperparameters (>0 writes a *_dev.jsonl)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     rows = load_rows(args.path)
-    train, cal, test = split(rows, args.test_frac, args.seed, args.cal_frac)
+    train, cal, test, dev = split(rows, args.test_frac, args.seed, args.cal_frac, args.dev_frac)
     stem = Path(args.path).with_suffix("")
     parts = [(f"{stem}_train.jsonl", train), (f"{stem}_test.jsonl", test)]
     if cal:
         parts.append((f"{stem}_cal.jsonl", cal))
+    if dev:
+        parts.append((f"{stem}_dev.jsonl", dev))
     for name, part in parts:
         with open(name, "w", encoding="utf-8") as fh:
             for r in part:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-    tail = f" + cal {len(cal)}" if cal else ""
+    tail = (f" + cal {len(cal)}" if cal else "") + (f" + dev {len(dev)}" if dev else "")
     print(f"[split] {len(rows)} -> train {len(train)}{tail} + test {len(test)}")
+    tested = Counter(r.get("category", "?") for r in test)
+    missing = sorted({r.get("category", "?") for r in rows} - set(tested))
+    if missing:
+        print(f"[split] WARNING: no test rows for categories: {missing}")
 
 
 if __name__ == "__main__":

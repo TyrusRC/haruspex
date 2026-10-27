@@ -7,7 +7,8 @@ mmdm (the MMDM benchmark, `test` split, config `default`) rows look like:
   score_values: [floats] | None,
   answer: {kind: "hard"|"soft", probabilities: [...]}   # aligned to options order
 
-choice -> SOFT target distribution over option names (best for calibration).
+choice -> SOFT target distribution over option names (kept in the data; gliner2 2.1
+          trains on hard labels only, so training uses its argmax).
 score  -> level labels + the argmax level index.
 boolean/noul -> P(true) from the yes option.
 
