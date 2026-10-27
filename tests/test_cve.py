@@ -69,8 +69,6 @@ class TestCveResolver(unittest.TestCase):
         self.assertIs(_resolve("CVE-2021-45046", "Log4j 2.16"), False)
         # FortiGate: fixed
         self.assertIs(_resolve("CVE-2022-40684", "FortiOS 7.2.2"), False)
-        # ProxyShell: wrong product
-        self.assertIs(_resolve("CVE-2021-34473", "nginx 1.20"), False)
         # regreSSHion: fixed
         self.assertIs(_resolve("CVE-2024-6387", "OpenSSH 9.8p1"), False)
         # IIS: wrong version
@@ -82,6 +80,45 @@ class TestCveResolver(unittest.TestCase):
     def test_patched_not_matched_inside_unpatched(self):
         # 'patched' must not fire on 'unpatched'
         self.assertIsNot(_resolve("CVE-2021-26855", "Exchange Server 2016 unpatched, without the 2021 update"), False)
+
+    def test_letter_suffix_versions_compare(self):
+        # 1.0.1g is the Heartbleed fix; "1.0.1" must not match it as a substring
+        self.assertIs(_resolve("CVE-2014-0160", "Target runs OpenSSL 1.0.1g (patched)"), False)
+        self.assertIs(_resolve("CVE-2023-38408", "OpenSSH 9.3p2"), False)
+        self.assertIs(_resolve("CVE-2023-38408", "OpenSSH 9.3p1"), True)
+
+    def test_version_is_tied_to_the_product(self):
+        # the first version in the text belongs to PHP, not Drupal
+        self.assertIs(_resolve("CVE-2018-7600", "PHP 8.1 stack, Drupal 7.60"), False)
+        self.assertIs(_resolve("CVE-2021-41773", "Apache httpd 2.4.49 behind a proxy on 10.0.0.5"), True)
+        # Spring Boot's version is not Spring Framework's
+        self.assertIsNone(_resolve("CVE-2022-22965", "Spring Boot 2.7 deployed as a WAR"))
+        # Docker's version is not runc's
+        self.assertIsNone(_resolve("CVE-2024-21626", "Docker 24.0.7 host"))
+
+    def test_backported_branch_fixes(self):
+        self.assertIs(_resolve("CVE-2022-0847", "Linux kernel 5.15.30"), False)
+        self.assertIs(_resolve("CVE-2022-0847", "Linux kernel 5.15.20"), True)
+        self.assertIs(_resolve("CVE-2021-44228", "log4j 2.12.2 on Java 7"), False)
+        self.assertIs(_resolve("CVE-2023-4966", "NetScaler ADC 14.1-8.49"), True)
+        self.assertIs(_resolve("CVE-2023-4966", "NetScaler ADC 14.1-8.50"), False)
+        self.assertIs(_resolve("CVE-2024-21762", "FortiOS 7.0.5"), True)
+        self.assertIs(_resolve("CVE-2024-21762", "FortiOS 7.2.7"), False)
+        self.assertIs(_resolve("CVE-2017-5638", "Apache Struts 2.5.10.1"), False)
+
+    def test_distro_packages_defer(self):
+        # distros backport fixes without bumping the upstream version
+        self.assertIsNone(_resolve("CVE-2024-6387", "OpenSSH 8.9p1 Ubuntu-3ubuntu0.10"))
+        self.assertIsNone(_resolve("CVE-2021-41773", "Ubuntu 22.04 host, Apache httpd 2.4.49"))
+
+    def test_absent_product_or_version_defers(self):
+        # absence of evidence is not a "not affected" verdict
+        self.assertIsNone(_resolve("CVE-2021-44228", "Java service; logging library version unknown"))
+        self.assertIsNone(_resolve("CVE-2021-44228", "Uses log4j (version not reported)"))
+        self.assertIsNone(_resolve("CVE-2021-34473", "nginx 1.20"))
+
+    def test_two_versions_for_one_product_defers(self):
+        self.assertIsNone(_resolve("CVE-2021-41773", "httpd 2.4.49 upgraded to httpd 2.4.51 on one node"))
 
     def test_never_wrong_on_dataset(self):
         p = ROOT / "data" / "security.jsonl"
