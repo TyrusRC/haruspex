@@ -1,369 +1,186 @@
 # Haruspex
 
-> A small, local, **calibrated decision layer** for security operations — reuses a
-> published decision encoder, adds typed verdicts and the ability to **abstain**.
+> A small, local, calibrated decision layer for security operations. It returns typed
+> verdicts, and it abstains when it isn't sure.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Haruspex reads a situation and bounded options and returns a typed, **calibrated**
-answer — and says "I'm not sure" instead of guessing when it should:
+Haruspex reads a situation and a bounded set of options and returns a typed answer:
 
-- **boolean** — yes/no + `P(yes)`
-- **choice** — pick one option
-- **score** — rate on an ordered rubric
+- **boolean**: yes/no plus `P(yes)`
+- **choice**: one option from a set
+- **score**: a level on an ordered rubric
 
-It runs locally on **CPU / CUDA / Apple-MPS**, serves the Jev / TypeSafe HTTP
-contract, and has **no vendor lock-in**.
+It runs locally on CPU, CUDA or Apple MPS, and serves a simple HTTP decision API.
 
-## What Haruspex is (and is not)
+## How it works
 
-Haruspex **reuses** the published decision encoder
-[`fastino/GLiNER2.5-Decide`](https://huggingface.co/fastino/GLiNER2.5-Decide)
-(Apache-2.0, ~494M params, DeBERTa-family, non-autoregressive). It does **not** train a
-decision model from scratch — that space is mature, and a redundant checkpoint helps
-no one.
+Haruspex reuses the published decision encoder
+[`fastino/GLiNER2.5-Decide`](https://huggingface.co/fastino/GLiNER2.5-Decide) (Apache-2.0,
+non-autoregressive). It does not train a model from scratch. It adds four things:
 
-The contribution is the layer around the reused model:
-
-1. **A typed decision contract** (boolean / choice / score) over `classify_text`.
-2. **Security specialization** — a small LoRA adapter trained on your decisions
-   (an example offensive+defensive data pack is included).
-3. **Selective calibration** — Learn-then-Test abstention: accept a verdict only when
-   its confidence clears a per-type threshold *certified* on a held-out calibration split
-   (exact binomial test, Bonferroni over a fixed grid) so that, with probability ≥ 1−δ,
-   the error *among accepted items* stays within your target risk; otherwise abstain.
-   Too little evidence fails closed (abstain). A raw confidence is not a risk control;
-   this is.
-
-The artifact you ship is a **30 MB LoRA adapter + a calibrator**, reattached to the
-reused base at load time — not a 2 GB copy.
-
-## Measured (RTX 3060, 12 GB, WSL2)
-
-> **Re-measurement pending (v0.2).** The numbers below predate two fixes: the v0.1
-> calibrator picked its threshold by raw empirical error (no finite-sample guarantee — on
-> data with known risk it broke the budget ~49 % of the time), and the shuffle-based split
-> moved rows between train and test whenever rows were added. The `runs/sec` adapter scores
-> 100 % on today's test split because it trained on most of it. Splits are now
-> content-hashed (stable as data grows) and the numbers will be re-measured on them.
-
-**Inference.** Base GLiNER2.5-Decide, no training, on 34 security decisions:
-boolean 0.62 · choice 0.55 · score 0.20 · overall **0.47**. ~2.0 GB VRAM,
-28 ms median/decision.
-
-**Held-out gain** (real train≠eval; a *partial* 250-step LoRA on ~2k public mmdm
-decision rows, 240 held out):
-
-| | accuracy | Brier | ECE |
-|---|---|---|---|
-| base (untrained) | 0.358 | 0.274 | 0.131 |
-| + LoRA (partial) | **0.433** | 0.211 | **0.057** |
-
-Modest but real: specialization generalizes and roughly halves calibration error. The
-selective layer at target risk 0.1 then accepts only the most-confident ~2.5 % with
-**zero accepted errors** — correct for a weak partial model; higher coverage needs a
-fuller train.
-
-**Security held-out — with enough data, specialization helps.** On a stratified 3-way
-split with hyperparameters selected on **cal** (never on test):
-
-| on the 91-row held-out test | accuracy | ECE | Brier |
-|---|---|---|---|
-| base GLiNER2.5-Decide (zero-shot) | 0.60 | 0.12 | 0.23 |
-| Llama-3.1-8B-Instruct (prompted) | 0.70 | — | — |
-| **Haruspex** LoRA, tuned (8 epochs, rank 16) | **0.88** | 0.12 | 0.12 |
-
-The calibrator was fit on the held-out **cal** set (not train) — but that same set also
-chose the hyperparameters, which voids any guarantee; v0.2 adds a separate **dev** split
-for tuning. At target risk 0.2 the adapter accepted the whole test set at accepted
-error 0.12. The headline: a ~494M specialized adapter **beats a prompted 8B general model
-(0.88 vs 0.70) at ~1/16 the size** and comparable latency, and lifts the base encoder from
-0.60. Larger sets need more epochs — at this size 8 epochs beat 5 (which underfit); rank
-16 beat rank 32. Per-category, the adapter leads on severity/triage/routing/verdict; the
-8B still edges it on CVE-version-range reasoning (knowledge-heavy). Caveat: 91 test rows
-still carry noise and the recipe was chosen on a 70-row cal set, so treat 0.88 as "best
-cleanly measured here," not a population estimate. See the comparison card in
-[`docs/benchmark.md`](docs/benchmark.md).
-
-*False-positive reduction (security goal).* Hard negatives and agent-authored judgment
-cases drove false positives toward zero on a held-out split:
-
-1. **Hard negatives** (patched/out-of-range CVEs, benign-but-noisy alerts, non-chainable
-   lows) lifted the actionable ("yes") class to **precision 0.97 / recall 0.94**.
-2. **CVE-applicability routing** (`haruspex/cve.py`). The residual false positives were
-   *confident* (P≈1.0) and confined to `off_cve_applicable` — fine-grained CVE version/OS
-   logic a 0.5B encoder won't learn and an abstention threshold can't catch. Those questions
-   now route to a deterministic resolver that answers only when confident and otherwise
-   **defers** (abstain → external KEV/NVD lookup). A version only counts when it is written
-   right after the product's name, backported fixes are encoded per release line, and a
-   product, version or distro package it cannot pin down defers rather than answering "not
-   affected". On the shipped dataset it decides 54 of 66 CVE questions with 0 wrong.
-   `CveResolver` is pluggable (inject praetor's `lookup_cve`); the safety property is
-   defer-on-uncertainty in both directions (unit-tested in `tests/test_cve.py`).
-
-Net on the 120-row test: selective coverage 0.96, accepted accuracy 0.90, boolean precision
-0.97, CVE false positives 0. The model is reserved for judgment (triage/severity/routing/
-verdict), where it leads even a prompted 8B; the residual soft spot is 4-way ordinal scoring
-(`off_severity`), an ordinal-accuracy limit, not a false-positive one.
-
-*On building the pack:* the rows are hand-authored and Claude-authored (Claude acting as
-a strong teacher that labels its own scenarios). Distillation from a small local teacher
-(Llama-3.1-8B) was tried and **discarded** — its labels on security judgment were too
-noisy and *lowered* held-out accuracy; curation fixes label distribution, not per-row
-correctness. For this task, a strong teacher's label quality is what matters.
-
-**Training cost — the base is DeBERTa-v3-large, whose disentangled attention is
-memory-heavy** (take note before you scale up):
-
-- Short rows (the security pack): LoRA peaks ~3.8 GB — comfortable.
-- Real-scale rows (long, many-option states): **batch 4 OOMs a 12 GB card** — a single
-  many-option row can need ~6 GB. The 3060 trains them only after dropping rows with
-  > 8 options or > 700 chars and using **batch 2 + grad-accum + gradient checkpointing +
-  `max_len` 192** → peak 2.7 GB, ~1.4 s/step.
-- A comfortable full-scale run (all rows, full length, several epochs) wants a **24 GB
-  GPU**, or the slow checkpointed path (~2 h / 2 epochs) on the 3060.
+1. **A typed decision contract** (boolean / choice / score) over the encoder.
+2. **Domain specialization.** Each security domain gets a small LoRA adapter, which is
+   reattached to the shared base at load time.
+3. **Deterministic routing.** Questions that are lookups rather than judgments, such as
+   CVE applicability and cloud scanner findings, go to rule-based resolvers. A resolver
+   answers only when the evidence pins the answer down. Otherwise it defers, so a gap in
+   its rules causes an abstention, not a wrong verdict.
+4. **Selective calibration.** A verdict is accepted only when its confidence clears a
+   threshold set for its decision type. That threshold is certified on a held-out
+   calibration split with Learn-then-Test (an exact binomial test, Bonferroni-corrected
+   over a fixed grid). With probability at least 1−δ, the error among accepted answers
+   stays within your target risk. When the calibration data can't certify any threshold,
+   Haruspex abstains on that decision type.
 
 ## Install
 
 ```sh
-pip install -e .                 # inference (brings gliner2 -> torch/transformers)
-pip install -e ".[train]"        # + LoRA / full fine-tune
-pip install -e ".[serve]"        # + Starlette/uvicorn for the HTTP server
+pip install -e .              # inference
+pip install -e ".[train]"     # + LoRA training
+pip install -e ".[serve]"     # + HTTP server
 ```
 
 ## Quickstart
 
 ```python
 from haruspex import Haruspex
-m = Haruspex.load(device="cuda")          # the reused base, no training
+
+m = Haruspex.load()   # base encoder; pass an adapter dir or HF repo id to specialize
 print(m.decide({"type": "boolean",
                 "state": "Target: WordPress 6.2, PHP 8.1, nginx",
                 "question": "Is a WordPress xmlrpc.php template relevant?",
                 "criteria": {"true": "WordPress target", "false": "not WordPress"}}))
 ```
 
-Specialize, calibrate, evaluate, serve:
+Device auto-selects (CUDA → MPS → CPU); override with `device=` or `--device`.
+
+## Train, calibrate, evaluate, serve
 
 ```sh
-python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15 --dev-frac 0.15  # train / cal / dev / test
-python -m haruspex.train     --train data/security_train.jsonl --out runs/sec --epochs 8 --seed 0
-# choose epochs / rank / seed by eval on *_dev.jsonl — never on cal or test
-# training is seeded (reproducible; retry a bad run with a new --seed) and ends with a
-# sanity-gate: a fixed discrimination probe that RAISES if the checkpoint collapsed
-# (every output ~0.5) instead of shipping a degenerate model. Override with --no-sanity-gate.
-# real-scale / long rows on a 12 GB GPU: add memory flags
-# python -m haruspex.train   --train data/security_train.jsonl --out runs/sec \
-#     --batch 2 --grad-accum 4 --grad-checkpoint --max-len 192
-python -m haruspex.calibrate --model runs/sec --data data/security_cal.jsonl --target-risk 0.2 \
-    --delta 0.1 --temp-data data/security_dev.jsonl   # per-type certified thresholds (+ boolean temperature)
-python -m haruspex.eval      --model runs/sec --data data/security_test.jsonl  # held-out: accuracy ± 95% CI, ECE, Brier,
-                                                                           # per-source split, coverage/risk
-python -m haruspex.serve     --model runs/sec --port 3000               # POST /v1/systemone · /v1/evaluate
+# 1. split: train / dev / cal / test
+python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15 --dev-frac 0.15
+
+# 2. train a LoRA adapter; choose epochs / rank / seed by eval on *_dev only
+python -m haruspex.train --train data/security_train.jsonl --out runs/sec --epochs 8 --seed 0
+
+# 3. fit the calibrator on the cal split (optionally fit boolean temperature on dev)
+python -m haruspex.calibrate --model runs/sec --data data/security_cal.jsonl \
+    --target-risk 0.2 --delta 0.1 --temp-data data/security_dev.jsonl
+
+# 4. report the final number once, on test
+python -m haruspex.eval --model runs/sec --data data/security_test.jsonl
+
+# 5. serve
+python -m haruspex.serve --model runs/sec --port 3000
 ```
 
-Device auto-selects (CUDA → Apple-MPS → CPU); override with `--device`.
+Training ends with a sanity gate: a fixed discrimination probe that refuses to save a
+collapsed checkpoint (one where every output is about 0.5). Retry with another `--seed`
+if it fires. On smaller GPUs, add `--batch 2 --grad-accum 4 --grad-checkpoint --max-len 192`.
 
 ## Data
 
-JSONL decision rows — format in [`data/schema.md`](data/schema.md). One row maps to one
-GLiNER2 classification task (labels = the candidates / levels / yes-no). Bootstrap labels
-from a heuristic, real outcomes, or one-shot distillation from a larger model.
-
-## Security decision dataset
-
-`data/security.jsonl` is the curated dataset spanning both sides of security work,
-across all three decision types (boolean / choice / score) and 14 categories. Includes
-DAST scanner adjudication rows (`data/dast_adjudication.jsonl`) matching vigil's exact
-evidence format for noise discrimination. `data/security_seed.jsonl` is a smaller worked
-example. The model itself is general; point it at your own decisions too.
-
-- **Offensive:** template/probe relevance, "is this scanner hit a real finding?",
-  verdict discipline (vulnerable / not-vulnerable / inconclusive), finding severity,
-  test-class prioritization, CVE applicability, chain-worthiness of a low finding.
-- **Defensive:** alert triage (true vs false positive), alert severity, detection-rule
-  applicability to a log source, incident routing, CVE remediation urgency, phishing,
-  telemetry selection.
-
-Every row carries `side` / `category` / `id` tags. The dataset is gated clean, and a
-content-hashed split keeps a test set the model never trains on — a row's split depends
-only on the row itself, so adding rows never moves one from train into test:
+Decision rows are JSONL, one decision per line; the format is in
+[`data/schema.md`](data/schema.md). Validate a file before training:
 
 ```sh
-python scripts/validate_data.py data/security.jsonl --build   # schema + dupes + balance; exits non-zero on error
-python scripts/split_data.py    data/security.jsonl --test-frac 0.2 --cal-frac 0.15 --dev-frac 0.15
+python scripts/validate_data.py data/security.jsonl --build
 ```
 
-Each split has one job: `*_train` fits the adapter, `*_dev` chooses hyperparameters,
-`*_cal` fits the calibrator (and nothing else — reusing it for tuning voids the
-guarantee), `*_test` reports the final number once.
+Included packs: `security.jsonl` (offensive and defensive: scanner adjudication, triage,
+severity, routing, CVE applicability, phishing, detection rules), plus `mobile`, `cloud`,
+`network` and `llm`.
 
-## Serving (Jev / TypeSafe HTTP contract)
+Splits are content-hashed: a row's split depends only on the row itself, so adding data
+never moves a training row into test. Each split has one job:
 
-Self-hosted and **keyless** (the key only authenticates a remote gateway, never your
-own model):
+| split | used for |
+|---|---|
+| `train` | fitting the adapter |
+| `dev` | choosing hyperparameters and temperature |
+| `cal` | fitting the calibrator, and nothing else |
+| `test` | the final reported number |
 
-- `POST /v1/evaluate` — native Jev shape.
-- `POST /v1/systemone` — TypeSafe shape (accepts `noul` as boolean).
-- `GET /v1/models` — model list (lists the served `domains`).
+## HTTP API
 
 ```
-POST /v1/evaluate  (or /v1/systemone)
-{ "model":"haruspex", "state": <str|obj>, "domain": "web"|"mobile"|...,
-  "questions": { "<name>": { "type":"boolean"|"noul"|"choice"|"score",
-                             "instructions":"...",
-                             "criteria": {true,false} | {opt:desc} | [low,high] } } }
+POST /v1/evaluate        (also /v1/systemone; type "noul" is accepted as boolean)
+{ "state": <str|obj>, "domain": "web"|"mobile"|...,
+  "questions": { "<name>": { "type": "boolean"|"choice"|"score",
+                             "instructions": "...",
+                             "criteria": {"true":..,"false":..} | {opt: desc} | [levels] } } }
 ```
 
-Each answer carries the verdict plus `accept` / `abstain` when a calibrator is loaded,
-and a `source`: `model`, `cve_lookup` / `cloud_rule` (a deterministic resolver answered),
-or `model_declined` (abstained and routed to an external lookup). The response echoes the
-`domain` that answered.
+Each answer carries its verdict, `accept` / `abstain` (when a calibrator is loaded), and a
+`source`:
 
-**Limits and hardening.** The raw body is capped at 512 KiB *before* it is parsed, `state`
-at 64 K characters and a request at 64 questions (each question is one encoder pass) —
-all rejected with `413`. Malformed JSON or a non-object body is a `400`, a malformed
-question is a per-question `error`, never a `500`. Inference runs off the event loop, and
-concurrent first requests to a domain load its model once. Opt-in:
-`HARUSPEX_API_KEY` (bearer key, compared in constant time) and `HARUSPEX_AUDIT_LOG`
-(one JSONL line per request; the raw `state` is never logged).
+| source | meaning |
+|---|---|
+| `model` | the encoder answered |
+| `cve_lookup` | the CVE resolver answered |
+| `cloud_rule` | the cloud resolver answered |
+| `model_declined` | abstained; route the question to an external lookup |
 
-**One endpoint, any domain (the router).** Serve several per-domain adapters behind the
-same endpoint and let the request's `domain` field pick the adapter:
+Other endpoints are `GET /health`, `GET /v1/models` and `GET /metrics`.
+
+Limits: the body is capped at 512 KiB (checked before parsing), `state` at 64 K
+characters, and a request at 64 questions. Malformed input returns `400`; a request over
+any limit returns `413`.
+
+Optional settings:
+
+- `HARUSPEX_API_KEY` requires a bearer key, compared in constant time.
+- `HARUSPEX_AUDIT_LOG` writes one JSONL line per request; the raw `state` is never logged.
+- `--ssl-keyfile` / `--ssl-certfile` serve HTTPS.
+
+## Per-domain adapters
+
+Each domain gets its own adapter on the shared base, served behind one endpoint. The
+request's `domain` field picks the adapter. When `domain` is omitted, the domain is
+inferred from the request text; otherwise the default adapter answers.
 
 ```sh
-haruspex-serve --adapters web=runs/web,mobile=runs/mobile --port 3000
-# a request with "domain":"mobile" is answered by the mobile adapter; "web" by the web
-# model; an unknown or missing domain falls back to --default-domain (web) — fail-open,
-# never an error. A single --model server ignores the field and answers from its one model.
+haruspex-serve --adapters web=runs/sec,mobile=runs/mobile,cloud=runs/cloud --port 3000
+haruspex-serve --adapters web=TyrusRC/haruspex,mobile=TyrusRC/haruspex#mobile  # from the Hub
 ```
 
-**Smart-switch fallback.** An explicit `domain` always wins (the calling tool knows its
-own domain, so a hint never mis-routes). When a request omits `domain`, the router infers
-one from the request text — mobile signals (`APK`, `AndroidManifest`, `strings.xml`,
-`debuggable`, …) route to the mobile adapter, otherwise the default. The response reports
-`domain_source` as `hint` / `inferred` / `default`. Inference runs only over registered
-adapters, so it never invents a domain the server cannot serve.
+`repo#subfolder` loads one adapter from a multi-domain repository.
 
-The shared base is loaded once *per domain* (gliner2 does not yet expose single-base
-adapter switching), so the router's win over running one server per domain is the single
-endpoint and routing — a mixed-domain caller (e.g. praetor) hits one URL. Each tool sends
-its own domain: a mobile scanner sends `"domain":"mobile"`, web/code tools send `"web"`.
+## Benchmarking
 
-## Benchmark against an LLM
-
-`scripts/bench.py` runs Haruspex and any OpenAI-compatible model (e.g. a local
-`llama-server`) on the same rows. The LLM gets the same state and option descriptions,
-greedy decoding, output constrained to the valid labels, and optional same-category
-worked examples drawn from the **train** split only:
+`scripts/bench.py` runs Haruspex and any OpenAI-compatible model on the same rows. The
+other model sees the same option descriptions, decodes greedily with output constrained
+to the valid labels, and can take few-shot examples drawn from the train split. The
+script reports accuracy with 95 % intervals, per-category accuracy, and an exact paired
+McNemar test.
 
 ```sh
-llama-server -m Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf -ngl 99 -c 8192 --port 8088
 python scripts/bench.py --data data/security_test.jsonl --model runs/sec \
     --llm-url http://127.0.0.1:8088 --shots 3 --shots-from data/security_train.jsonl
 ```
 
-It prints both sides' metrics (accuracy with a 95 % interval, per-source split), a
-per-category table and an exact paired McNemar p-value: a gap is only a real gap when
-p < 0.05.
+Results are recorded in [`docs/benchmark.md`](docs/benchmark.md).
 
-## Publish to Hugging Face
+## Integration guidance
 
-The artifact is the adapter dir (`haruspex.json` manifest + the LoRA adapter) plus
-`calibrator.json`, with a generated model card:
+Use Haruspex after a tool has produced candidates, to triage and rank them. For example,
+for each finding, ask "is this real and reportable?" and "how severe?". Treat a `no` or
+an abstention as "not proven yet", never as "drop it". Don't use it to gate which targets
+get tested.
 
-```sh
-pip install -e ".[data]" && huggingface-cli login     # or export HF_TOKEN=...
-python scripts/publish_hf.py --model runs/sec --repo <you>/haruspex
-```
+## Limitations
 
-Load it back with `Haruspex.load("<you>/haruspex", device="cuda")`.
+- It decides bounded questions; open-ended judgment belongs to a general model.
+- Recalibrate on your own data before relying on the risk guarantee in a new domain.
+- Full fine-tuning is disabled until gliner2 can reload its full-mode checkpoints.
+- Prediction sets, and temperature scaling for non-boolean types, wait on gliner2
+  returning per-label scores.
+- Digital forensics / incident response is not covered yet.
 
-## Integrating Haruspex into a scanner (the useful flow)
+## Contributing
 
-Haruspex is a **native, standalone** decision layer — point any tool at `/v1/evaluate`
-(keyless, loopback) or call `Haruspex.decide()` in-process. It does **not** depend on
-praetor.
-
-**Where it earns its place — finding triage / adjudication**, run as a **fail-open**
-pass *after* a tool has produced (and ideally verified) candidates:
-
-- the tool asks, per candidate, "is this a real, reportable finding?" with the
-  **verified evidence** in the state, plus a severity score;
-- Haruspex **annotates and re-ranks** — raises confidence on confirmed bugs, sinks
-  noise (missing headers, version banners, `OPTIONS`/`TRACE`, empty dir-listings),
-  withholds "confirmed" on a mere indicator (an error/reflection is a *lead*, not a
-  finding);
-- **it never removes a candidate.** A "no"/abstain means "not proven yet — keep
-  hunting", never "drop it". Haruspex may block an *unproven report*, never a *lead*.
-  A missed finding is the cardinal harm, so Haruspex is wired only at the report/triage
-  stage — **never** at lead/probe selection or any truncation gate.
-
-**Do not** use it to prioritize *which* targets/classes to probe: boolean "worth
-testing?" saturates when everything is relevant, and the relevance signal is
-phrasing-sensitive. Triage and severity are the reliable, discriminating heads.
-
-Measured on a mixed probe set (real bugs vs noise vs safe code vs mere indicators) the
-triage head separates cleanly (real → `yes`≈1.0; noise/safe/indicator → `no`≈0.0). A
-live pentest A/B on an all-vulnerable, zero-noise lab API showed **no** differentiation
-(nothing to rank or suppress) and a small latency cost — Haruspex's value is **conditional
-on noise/false-positives/irrelevance being present**, i.e. a real scanner's raw output,
-which is exactly where it plugs in.
-
-## Per-domain adapters
-
-One ~0.5B model cannot hold every security domain at once — merging a small mobile pack
-into the web/SOC set destabilized training (it collapsed or ignored the new domain). The
-architecture is therefore **one shared base + a LoRA adapter per domain**, served either
-behind one routed endpoint (`--adapters web=…,mobile=…`, picked by the request `domain`) or
-one endpoint per domain.
-
-`data/mobile.jsonl` (203 rows, MASVS-aligned Android/iOS) trains a **dedicated mobile
-adapter** (published as the `mobile/` subfolder of
-[`TyrusRC/haruspex`](https://huggingface.co/TyrusRC/haruspex)):
-on its v0.1 held-out split it scored **accuracy 0.98, recall 1.00** (no missed findings;
-re-measurement on stable splits pending) and
-cleanly separates real findings (hardcoded secret, debuggable, exported component, ATS-off,
-WebView bridge → ~1.0) from hardened ones (Keystore, `exported=false`,
-EncryptedSharedPreferences → ~0.0) — concepts the shared model could not learn. Serve both
-from the Hub:
-
-```sh
-haruspex-serve --adapters web=TyrusRC/haruspex,mobile=TyrusRC/haruspex#mobile --port 3000
-```
-
-One repo holds every domain: the **web/SOC** adapter at the root and each other domain in
-its own subfolder (`mobile/`, …). A spec `repo#subfolder` loads that subfolder; a new
-domain is a new subfolder in the same repo, not a new repo — so it stays one repo, one
-endpoint, one API anyone can call.
-
-Each tool names its domain: a mobile scanner (e.g. centurion) sends `"domain":"mobile"`,
-web/code tools (vigil, mantis, praetor) send `"web"`; a routed server picks the adapter and
-a single-adapter server ignores the hint. (Note: the post-train sanity-gate's probe is
-web-specific — pass `--gate-domain mobile` or `--no-sanity-gate` when training a non-web
-adapter.)
-
-## Status
-
-**v0.2 (current).** The toolkit (specialize → calibrate → eval → serve → bench) runs
-end-to-end on a 12 GB RTX 3060. v0.2 fixed the parts that make safety claims:
-
-- the calibrator certifies its threshold (Learn-then-Test) and fails closed;
-- the CVE and cloud resolvers defer instead of answering confidently on evidence they
-  cannot pin down;
-- splits are content-hashed, with a separate dev split for tuning.
-
-**Not yet re-measured.** v0.1's headline (base 0.60 → LoRA 0.88, beating a prompted 8B at
-0.70) came from a split that has since been shown to leak, so it is indicative only. The
-first retrain on the new 438-row train split collapsed (every output 0.5) and was refused
-by the sanity gate; a re-run with other seeds, a dev-selected recipe and then the paired
-8B benchmark come next. Coverage today is offensive (web/scanner, mobile, cloud, network,
-LLM) and defensive SOC; digital forensics / incident response is not covered yet.
-
-Known limits: a 12 GB card trains only capped/filtered real-scale data (DeBERTa-v3-large is
-memory-heavy); full-mode reload waits on a gliner2 save fix; prediction *sets* and
-temperature scaling beyond boolean wait on gliner2 returning per-label scores from
-`classify_text`. Contributions and independent evaluations welcome — run
-`python -m unittest discover tests` before a PR.
+Run `python -m unittest discover tests` before opening a pull request.
 
 ## License
 
@@ -371,8 +188,6 @@ temperature scaling beyond boolean wait on gliner2 returning per-label scores fr
 
 ## Acknowledgements
 
-The decision-model idea comes from TypeSafe's **Jev** ("System One") and the open
-reproductions (**OpenJev**, **Von**, **Kev**, **NanoJev**, **Laya**). The base encoder is
-**GLiNER2.5-Decide** by fastino (built on GLiNER2 / DeBERTa). Haruspex reuses that work;
-its own contribution is the typed contract, the security specialization, and the
-selective-calibration layer.
+The decision-model framing follows TypeSafe's Jev ("System One") and its open
+reproductions. The base encoder is GLiNER2.5-Decide by fastino, built on GLiNER2 and
+DeBERTa.
