@@ -316,7 +316,9 @@ def build_app(adapters: dict[str, str], default: str = "web"):
         return JSONResponse({"model": body.get("model") or served_name,
                              "domain": domain, "domain_source": source, "answers": answers})
 
-    router.model(router.default)   # warm the default (version-proof: no lifespan hook)
+    # Warm the default adapter off the main thread so app creation is instant.
+    # A first request before it finishes waits on the load lock (same as MCP).
+    threading.Thread(target=router.model, args=(router.default,), daemon=True).start()
     return Starlette(routes=[
         Route("/health", health, methods=["GET"]),
         Route("/v1/models", models, methods=["GET"]),
