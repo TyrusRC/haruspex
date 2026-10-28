@@ -9,6 +9,7 @@ _TEMPLATE = """---
 license: apache-2.0
 library_name: gliner2
 pipeline_tag: text-classification
+inference: false
 language:
   - en
 tags:
