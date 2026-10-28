@@ -79,6 +79,11 @@ _DOMAIN_HINTS: dict[str, tuple[str, ...]] = {
             "prompt leak", "guardrail", "indirect prompt", "system-prompt"),
     "soc": ("defender xdr", "microsoft defender", "sentinel", "evtx", "sysmon", "eventid",
             "security event log", "mitre techniques", "alert categories", "triage grade"),
+    "dast": ("dast finding", "scanner finding", "reflected xss", "sql injection detected",
+             "command injection", "ssrf", "open redirect", "nuclei template", "vigil finding",
+             "false positive", "true positive", "noise", "confidence"),
+    "guide": ("template relevant", "wstg", "owasp", "detection rule", "nuclei template",
+              "tech stack", "framework", "detector applicable"),
 }
 
 
