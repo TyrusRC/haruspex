@@ -61,6 +61,8 @@ specializes it on security decisions. It does not train a decision model from sc
 
 It is a classifier for bounded decisions — not a chatbot, not an exploit generator.
 
+Try it without installing anything: [live demo Space](https://huggingface.co/spaces/TyrusRC/haruspex-demo) (free CPU, so the first request per domain takes a minute).
+
 ## Use
 
 ```python

@@ -1,0 +1,30 @@
+[
+ [
+  "web",
+  "boolean",
+  "The Spring controller @GetMapping(\"/account/{id}\") does return accountRepo.findById(id) using the path variable directly, with no check that the authenticated principal owns that account. Any logged-in user can iterate id values to read other customers' balances. CWE-639 IDOR / broken object-level authorization. The id source reaches the data lookup with no ownership predicate. Severity: HIGH.",
+  "Is this a real, reportable security finding?",
+  "true: a real, exploitable vulnerability confirmed by the analysis\nfalse: speculation / hedged / theoretical / hallucinated / best-practice \u2014 not a confirmed finding"
+ ],
+ [
+  "web",
+  "choice",
+  "The return parameter sets a redirect. Control: return=/account issues a 302 to the same-origin path, so the param drives the Location header. return=https://evil.example and //evil.example are both rewritten to the site origin, and no external host appears in Location across variants.",
+  "What is the verdict for open_redirect?",
+  "vulnerable: The param sent the browser to an attacker-controlled external host\nnot_vulnerable: The param provably drives the redirect but external hosts are normalised to same-origin\ninconclusive: No redirect occurred at all so the behaviour could not be judged"
+ ],
+ [
+  "web",
+  "score",
+  "A single phishing email was blocked at the gateway; the user never received or clicked it.",
+  "Rate the alert severity.",
+  "low\nmedium\nhigh\ncritical"
+ ],
+ [
+  "soc",
+  "choice",
+  "Microsoft Defender XDR incident with 1 alert(s) and 4 evidence item(s).\nEvidence: User (impacted), CloudLogonRequest (related), Ip (related), CloudLogonSession (related).\nAlert categories: InitialAccess x4.\nMITRE techniques: T1078 x4, T1078.004 x4.",
+  "What is the triage grade for this security incident?",
+  "true_positive: real malicious activity that needs response\nbenign_positive: the detection is correct but the activity is expected or authorised (admin work, testing, sanctioned tools)\nfalse_positive: the detection fired on activity that does not match what it looks for"
+ ]
+]
