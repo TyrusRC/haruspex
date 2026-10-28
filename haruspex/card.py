@@ -43,8 +43,9 @@ Haruspex **reuses** the published decision encoder
 specializes it on security decisions. It does not train a decision model from scratch.
 
 - Base: `{base}`.
-- Added: a typed decision contract, security specialization data, and a
-  split-conformal **selective-calibration** layer (accept/abstain against a risk budget).
+- Added: a typed decision contract, security specialization data, a certified
+  **selective-calibration** layer (accept/abstain against a risk budget), conformal
+  **prediction sets**, and a **novelty gate** that abstains on unfamiliar input.
 - Serves the TypeSafe `POST /v1/systemone` and native `/v1/evaluate` contracts.
 
 ## Intended use (security, both sides)
@@ -52,8 +53,10 @@ specializes it on security decisions. It does not train a decision model from sc
 - **Offensive (pentest / red-team):** is this template/probe relevant to the target?
   is this scanner hit a real finding? finding severity; verdict discipline
   (vulnerable / not-vulnerable / inconclusive); attack-path next step.
-- **Defensive (SOC / blue-team):** alert triage (true vs false positive), alert
-  severity/priority, detection-rule applicability, incident routing, CVE applicability.
+- **Defensive (SOC / blue-team):** alert and incident triage (true / benign / false
+  positive), alert severity/priority, detection-rule applicability, incident routing, CVE
+  applicability, ATT&CK tactic of Windows/Sysmon events. Raw Defender, Sentinel, Elastic
+  ECS and Windows event JSON is normalised before the model reads it.
 
 It is a classifier for bounded decisions — not a chatbot, not an exploit generator.
 
@@ -61,7 +64,7 @@ It is a classifier for bounded decisions — not a chatbot, not an exploit gener
 
 ```python
 from haruspex import Haruspex
-m = Haruspex.load("{repo}", device="cuda")   # or "mps" / "cpu"
+m = Haruspex.load({load_args}, device="cuda")   # or "mps" / "cpu"
 print(m.decide({{"type":"boolean","state":"Target: WordPress 6.2, PHP 8.1",
                  "question":"Is a WordPress xmlrpc.php template relevant?",
                  "criteria":{{"true":"WordPress target","false":"not WordPress"}}}}))
@@ -71,22 +74,27 @@ Or serve the decision API (keyless, self-hosted):
 
 ```sh
 pip install "haruspex[serve] @ git+https://github.com/TyrusRC/haruspex"
-haruspex-serve --model {repo} --port 3000      # POST /v1/systemone  ·  /v1/evaluate
+haruspex-serve {serve_args} --port 3000      # POST /v1/systemone  ·  /v1/evaluate
 ```
 
 ## Calibration{cal}
 
-A split-conformal selective layer gates each verdict: it accepts when the top-1
-confidence clears a threshold fitted to hold the error AMONG accepted items at a target
-risk, and abstains otherwise. Fit it with `python -m haruspex.calibrate`; evaluate
-coverage/risk with `python -m haruspex.eval`.
+Each verdict carries the full probability distribution over its options (temperature-
+scaled). A Learn-then-Test selective layer accepts a verdict only when its confidence
+clears a threshold certified on a held-out calibration split, so that with probability
+1 - delta the error among accepted verdicts stays within the target risk; otherwise it
+abstains with `"route": "escalate"`. A conformal prediction set lists the options the
+true answer is among, and a novelty gate abstains on inputs unlike the training data.
+Fit with `python -m haruspex.calibrate` and `python -m haruspex.ood`; evaluate with
+`python -m haruspex.eval`.{eval}
 
 ## Limitations
 
 - A specialist for the decision types above; novel free-form judgments belong to a
   general LLM.
-- Calibrated on the training mix — recalibrate for a very different domain.
-- Prediction SETS (not just abstention) await a GLiNER2 fix for per-label scores.
+- Calibrated on this domain's held-out split; recalibrate before relying on the
+  guarantee on your own data.
+- Prediction-set coverage is marginal over the calibration mix, not per input.
 
 Apache-2.0. Repo + recipe: https://github.com/TyrusRC/haruspex
 """
@@ -104,50 +112,45 @@ def _base_model(model_dir: Path) -> str:
 
 
 def _eval_blocks(model_dir: Path, repo: str):
-    """Return (model_index_yaml, eval_section_md) from an optional eval.json."""
-    ef = model_dir / "eval.json"
-    if not ef.exists():
+    """Return (model_index_yaml, eval_section_md) from every eval*.json in the dir
+    (`python -m haruspex.eval --out`), one result per held-out test set."""
+    evals = []
+    for ef in sorted(model_dir.glob("eval*.json")):
+        try:
+            evals.append(json.loads(ef.read_text()))
+        except (ValueError, OSError):
+            continue
+    if not evals:
         return "", ""
-    try:
-        e = json.loads(ef.read_text())
-    except (ValueError, OSError):
-        return "", ""
-    name = repo.split("/")[-1]
-    ds = e.get("dataset", "security held-out")
-    n = e.get("test_n")
-    acc = e.get("accuracy")
-    mlines = [f"            value: {acc}", "            name: accuracy"]
-    mi = (
-        "model-index:\n"
-        f"  - name: {name}\n"
-        "    results:\n"
-        "      - task:\n"
-        "          type: text-classification\n"
-        "          name: Security decision (boolean / choice / score)\n"
-        "        dataset:\n"
-        "          type: custom\n"
-        f"          name: {ds}" + (f" ({n} rows)" if n else "") + "\n"
-        "        metrics:\n"
-        "          - type: accuracy\n" + "\n".join(mlines) + "\n"
-    )
-    extra = "".join(
-        f"          - type: {k}\n            value: {e[k]}\n            name: {k.upper()}\n"
-        for k in ("ece", "brier") if k in e
-    )
-    mi += extra
-    sec = (f"\n\n## Evaluation\n\nOn a {n}-row held-out split of the security pack "
-           f"(recipe selected on a separate calibration split, never on test): "
-           f"**accuracy {acc}**")
-    if "ece" in e:
-        sec += f", ECE {e['ece']}"
-    if "brier" in e:
-        sec += f", Brier {e['brier']}"
-    sec += (". The adapter beats a prompted general 8B model on the same set at a small "
-            "fraction of the parameters; see the repo's `docs/benchmark.md` comparison card.")
+    results, lines = [], []
+    for e in evals:
+        ds = e.get("dataset", "held-out test split")
+        n = e.get("test_n")
+        label = ds + (f" ({n} rows)" if n else "")
+        metrics = "".join(f"          - type: {k}\n            value: {e[k]}\n            name: {k}\n"
+                          for k in ("accuracy", "ece", "brier") if k in e)
+        results.append("      - task:\n          type: text-classification\n"
+                       "          name: Security decision (boolean / choice / score)\n"
+                       f"        dataset:\n          type: custom\n          name: {label}\n"
+                       f"        metrics:\n{metrics}")
+        line = f"- **{label}**: accuracy {e.get('accuracy')}"
+        if "ece" in e:
+            line += f", ECE {e['ece']}"
+        if "brier" in e:
+            line += f", Brier {e['brier']}"
+        sel = e.get("selective") or {}
+        if sel:
+            line += (f"; with the calibrator it answers {sel.get('coverage')} of rows at "
+                     f"accuracy {sel.get('accepted_accuracy')} and abstains on the rest")
+        lines.append(line + ".")
+    mi = f"model-index:\n  - name: {repo.split('/')[-1]}\n    results:\n" + "".join(results)
+    sec = ("\n\n## Evaluation\n\nHeld-out test sets, never used for training, model "
+           "selection or calibration:\n\n" + "\n".join(lines) +
+           "\n\nComparisons against general LLMs are in the repo's `docs/benchmark.md`.")
     return mi, sec
 
 
-def build_card(model_dir: str | Path, repo: str) -> str:
+def build_card(model_dir: str | Path, repo: str, subfolder: str = "") -> str:
     model_dir = Path(model_dir)
     base = _base_model(model_dir)
     cal_file = model_dir / "calibrator.json"
@@ -155,18 +158,25 @@ def build_card(model_dir: str | Path, repo: str) -> str:
     if cal_file.exists():
         try:
             c = json.loads(cal_file.read_text())
-            cal = (f"\n\nFitted calibrator: accept threshold `{c.get('threshold')}`, "
-                   f"target risk `{c.get('target_risk')}`, coverage `{c.get('coverage')}` "
-                   f"(n={c.get('n')}).")
+            thr = ({t: f.get("threshold") for t, f in c["by_type"].items()}
+                   if c.get("by_type") else c.get("threshold"))
+            cal = (f"\n\nFitted calibrator: accept threshold `{thr}`, target risk "
+                   f"`{c.get('target_risk')}` at delta `{c.get('delta')}`, coverage on the "
+                   f"calibration split `{c.get('coverage')}` (n={c.get('n')}), temperature "
+                   f"`{round(c.get('temperature', 1.0), 3)}`.")
         except (ValueError, OSError):
             pass
     model_index, eval_section = _eval_blocks(model_dir, repo)
-    return _TEMPLATE.format(repo=repo, base=base, model_index=model_index,
+    load_args = f'"{repo}", subfolder="{subfolder}"' if subfolder else f'"{repo}"'
+    serve_args = f"--adapters {subfolder}={repo}#{subfolder}" if subfolder else f"--model {repo}"
+    title = f"{repo} ({subfolder})" if subfolder else repo
+    return _TEMPLATE.format(repo=title, base=base, model_index=model_index,
+                            load_args=load_args, serve_args=serve_args,
                             base_url="https://huggingface.co/fastino/GLiNER2.5-Decide",
-                            cal=cal + eval_section)
+                            cal=cal, eval=eval_section)
 
 
-def write_card(model_dir: str | Path, repo: str) -> Path:
+def write_card(model_dir: str | Path, repo: str, subfolder: str = "") -> Path:
     out = Path(model_dir) / "README.md"
-    out.write_text(build_card(model_dir, repo), encoding="utf-8")
+    out.write_text(build_card(model_dir, repo, subfolder), encoding="utf-8")
     return out

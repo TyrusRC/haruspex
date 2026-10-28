@@ -6,6 +6,10 @@ Writes a model card (README.md) into the folder, then uploads everything
   pip install -e ".[data]"          # brings huggingface_hub
   huggingface-cli login             # or set HF_TOKEN
   python scripts/publish_hf.py --model runs/haruspex --repo <you>/haruspex
+  python scripts/publish_hf.py --model runs/mobile --repo <you>/haruspex --subfolder mobile
+
+With --subfolder, the adapter lands in that folder of the repo, loadable as
+`Haruspex.load("<you>/haruspex", subfolder="mobile")` or `<you>/haruspex#mobile`.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ def main():
     ap = argparse.ArgumentParser(description="Publish Haruspex to the HF Hub")
     ap.add_argument("--model", required=True, help="trained model dir")
     ap.add_argument("--repo", required=True, help="HF repo id, e.g. TyrusRC/haruspex")
+    ap.add_argument("--subfolder", default="", help="upload into this folder of the repo (one domain)")
     ap.add_argument("--private", action="store_true")
     ap.add_argument("--token", default=os.environ.get("HF_TOKEN", ""))
     args = ap.parse_args()
@@ -36,18 +41,21 @@ def main():
     if not (is_adapter or is_merged):
         sys.exit(f"error: {model_dir} is not a Haruspex model dir (no haruspex.json or config.json)")
 
-    card = write_card(model_dir, args.repo)
+    card = write_card(model_dir, args.repo, args.subfolder)
     print(f"[publish] wrote model card -> {card}  ({'adapter' if is_adapter else 'merged'})")
 
     from huggingface_hub import HfApi
     api = HfApi(token=args.token or None)
     api.create_repo(args.repo, private=args.private, exist_ok=True, repo_type="model")
-    print(f"[publish] uploading {model_dir} -> https://huggingface.co/{args.repo}")
+    dest = f"{args.repo}/{args.subfolder}" if args.subfolder else args.repo
+    print(f"[publish] uploading {model_dir} -> https://huggingface.co/{dest}")
     # Ship the artifact, not the training bookkeeping (logs, failed-batch dumps, configs).
     api.upload_folder(folder_path=str(model_dir), repo_id=args.repo, repo_type="model",
+                      path_in_repo=args.subfolder or None,
+                      commit_message=f"Update {args.subfolder or 'root'} adapter",
                       ignore_patterns=["logs/*", "training_config.json", "failed_batches.jsonl",
                                        "**/optimizer.pt", "**/scheduler.pt"])
-    print(f"[publish] done -> https://huggingface.co/{args.repo}")
+    print(f"[publish] done -> https://huggingface.co/{dest}")
 
 
 if __name__ == "__main__":

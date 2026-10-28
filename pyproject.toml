@@ -15,14 +15,16 @@ dependencies = [
 
 [project.optional-dependencies]
 serve = ["starlette>=0.37", "uvicorn>=0.29"]
+mcp = ["mcp>=2.3,<3"]                               # MCP stdio tool server (2.x: FastMCP is MCPServer)
 train = ["gliner2[train]>=2.1", "peft>=0.11"]       # LoRA / full fine-tune
-data = ["datasets>=2.19", "huggingface_hub>=0.23"]  # pull public decision datasets
+data = ["datasets>=2.19", "huggingface_hub>=0.23", "pyyaml>=6"]  # public datasets (+ OTRF metadata)
 distill = ["httpx>=0.27"]                           # optional: label rows from an OpenAI-compatible model
 
 [project.scripts]
 haruspex-train = "haruspex.train:main"
 haruspex-eval = "haruspex.eval:main"
 haruspex-serve = "haruspex.serve:main"
+haruspex-mcp = "haruspex.mcp_server:main"
 haruspex-calibrate = "haruspex.calibrate:main"
 
 [build-system]

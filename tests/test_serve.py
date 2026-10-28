@@ -166,15 +166,13 @@ class SelectiveCalibratorTest(unittest.TestCase):
     def test_temperature_fit_softens_overconfidence(self):
         from haruspex.calibrate import fit_temperature
         # says 0.99 but is right only 70% of the time -> T > 1 pulls it toward 0.5
-        pairs = [(0.99, True)] * 70 + [(0.99, False)] * 30
-        T = fit_temperature(pairs)
+        import math
+        from haruspex.scorer import ensemble_probs
+        z = [{"yes": math.log(99), "no": 0.0}]   # softmax -> 0.99
+        T = fit_temperature([(z, "yes")] * 70 + [(z, "no")] * 30)
         self.assertGreater(T, 1.0)
-        cal = SelectiveCalibrator(None, 0.1, temperature=T)
-        self.assertAlmostEqual(cal.scale(0.99), 0.7, delta=0.03)
+        self.assertAlmostEqual(ensemble_probs(z, T)["yes"], 0.7, delta=0.03)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class StateSizeGuardTest(unittest.TestCase):
@@ -325,3 +323,28 @@ class TLSArgsTest(unittest.TestCase):
                            capture_output=True, text=True, timeout=15)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("ssl-keyfile and --ssl-certfile", r.stderr + r.stdout)
+
+
+class BatchedQuestionsTest(unittest.TestCase):
+    def test_valid_questions_go_in_one_batch_and_bad_ones_stay_errors(self):
+        from haruspex.serve import answer_questions
+
+        class _Many:
+            calls = []
+
+            def decide_many(self, rows):
+                self.calls.append(len(rows))
+                return [{"type": "boolean", "label": "yes"} for _ in rows]
+
+        m = _Many()
+        qs = {"a": {"type": "boolean", "instructions": "q1?"},
+              "bad": {"type": "choice", "instructions": "q2?", "criteria": {"only": "one"}},
+              "b": {"type": "boolean", "instructions": "q3?"}}
+        out = answer_questions(m, "state", qs)
+        self.assertEqual(m.calls, [2])
+        self.assertIn("error", out["bad"])
+        self.assertEqual(list(out), ["a", "bad", "b"])
+
+
+if __name__ == "__main__":
+    unittest.main()

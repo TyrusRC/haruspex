@@ -8,7 +8,10 @@ optionally k same-category worked examples drawn from the TRAIN split only.
   python scripts/bench.py --data data/security_test.jsonl --model runs/sec-v2 \\
       --llm-url http://127.0.0.1:8088 --shots 3 --shots-from data/security_train.jsonl
 
-Prints each side's metrics, a per-category table, and the exact McNemar p-value.
+Prints each side's metrics, a per-category table, and the exact McNemar p-value, then
+the CASCADE: Haruspex answers what its calibrator accepts and the LLM gets only the
+abstentions. That is the deployment shape: the question is whether the cascade matches
+the LLM while sending it a fraction of the calls.
 """
 
 from __future__ import annotations
@@ -97,19 +100,43 @@ def main():
 
     from haruspex.model import Haruspex
     hx = Haruspex.load(args.model)
-    ours, theirs = [], []
+    ours, theirs, both = [], [], []
+    llm = _llm_fn(args.llm_url, pool, args.shots)
+    cache = {}
+
+    def llm_cached(row):   # each row costs one LLM call, however often it is asked
+        if id(row) not in cache:
+            cache[id(row)] = llm(row)
+        return cache[id(row)]
+
+    escalated = []
+
+    def cascade(row):
+        v = hx.decide(row)
+        if v.get("abstain"):
+            escalated.append(1)
+            return llm_cached(row)
+        return v
+
     a = score_rows(hx.decide, rows, ours)
-    b = score_rows(_llm_fn(args.llm_url, pool, args.shots), rows, theirs)
+    b = score_rows(llm_cached, rows, theirs)
+    c = score_rows(cascade, rows, both)
     print("haruspex:", json.dumps(a))
     print("llm     :", json.dumps(b))
     print(f"mcnemar : p={_mcnemar_p(ours, theirs):.4g}  (paired exact; < 0.05 = a real difference)")
+    n = len(ours)
+    print(f"cascade : accuracy {c['accuracy']} {c['accuracy_ci95']}  LLM calls "
+          f"{len(escalated)}/{n} ({len(escalated) / max(1, n):.0%})  "
+          f"mcnemar vs llm p={_mcnemar_p(both, theirs):.4g}")
     ca, cb = _by_category(rows, ours), _by_category(rows, theirs)
     print(f"\n{'category':28} {'n':>3} {'haruspex':>9} {'llm':>6}")
     for c in ca:
         print(f"{c:28} {ca[c][1]:>3} {ca[c][0]:>9.2f} {cb[c][0]:>6.2f}")
     if args.out:
         Path(args.out).write_text(json.dumps({"haruspex": a, "llm": b, "ours": ours,
-                                              "theirs": theirs}, indent=1))
+                                              "theirs": theirs, "cascade": c,
+                                              "cascade_rows": both,
+                                              "llm_calls": len(escalated)}, indent=1))
 
 
 if __name__ == "__main__":

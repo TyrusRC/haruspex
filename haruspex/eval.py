@@ -12,6 +12,8 @@ any /v1/evaluate or /v1/systemone server for a head-to-head.
 
 from __future__ import annotations
 
+import json
+
 import argparse
 import math
 import time
@@ -154,6 +156,9 @@ def main():
     ap.add_argument("--device", default="")
     ap.add_argument("--compare-url", default="", help="an /v1/evaluate endpoint to benchmark against")
     ap.add_argument("--compare-key", default="")
+    ap.add_argument("--out", default="", help="also write the metrics as JSON (e.g. <model>/eval.json, "
+                                              "which the model card reads)")
+    ap.add_argument("--name", default="", help="dataset name recorded in --out")
     args = ap.parse_args()
 
     rows = load_rows(args.data)
@@ -162,7 +167,13 @@ def main():
     from .model import Haruspex
     hx = Haruspex.load(args.model, device=pick_device(args.device))
     ours: list = []
-    print("haruspex:", score_rows(hx.decide, rows, ours))
+    metrics = score_rows(hx.decide, rows, ours)
+    print("haruspex:", metrics)
+    if args.out:
+        from pathlib import Path
+        Path(args.out).write_text(json.dumps({**metrics, "test_n": metrics.get("n"),
+                                              "dataset": args.name or Path(args.data).stem},
+                                             indent=1), encoding="utf-8")
     if args.compare_url:
         theirs: list = []
         print("compare :", score_rows(_http_answer_fn(args.compare_url, args.compare_key), rows, theirs))

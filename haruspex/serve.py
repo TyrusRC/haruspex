@@ -77,6 +77,8 @@ _DOMAIN_HINTS: dict[str, tuple[str, ...]] = {
                 "delegation", "llmnr", "nbt-ns", "sysvol", "dcsync", "adcs", "certipy", "ntlm relay"),
     "llm": ("prompt injection", "jailbreak", "system prompt", "llm", "rag ", "excessive agency",
             "prompt leak", "guardrail", "indirect prompt", "system-prompt"),
+    "soc": ("defender xdr", "microsoft defender", "sentinel", "evtx", "sysmon", "eventid",
+            "security event log", "mitre techniques", "alert categories", "triage grade"),
 }
 
 
@@ -175,6 +177,36 @@ def _question_to_row(state, q: dict) -> dict:
     return row
 
 
+def state_len(state) -> int:
+    """Size of `state` as the limits count it (a non-string state counts as its JSON)."""
+    return len(state) if isinstance(state, str) else len(json.dumps(state, default=str))
+
+
+def answer_questions(m, state, questions: dict) -> dict:
+    """Answer every question about one state; a bad question is a per-question error,
+    never a failed request. Valid questions go to the model as ONE batch (`decide_many`)
+    when it has one. Shared by the HTTP server and the MCP server."""
+    from .data import label_map
+    answers, valid = {}, {}
+    for name, q in questions.items():
+        if not isinstance(q, dict):
+            answers[name] = {"error": "question must be an object"}
+            continue
+        try:
+            row = _question_to_row(state, q)
+            label_map(row)   # schema check up front, so one bad question cannot sink the batch
+            valid[name] = row
+        except ValueError as e:
+            with _METRICS_LOCK:
+                _METRICS["requests_errors"] += 1
+            answers[name] = {"error": str(e)}
+    if valid:
+        many = getattr(m, "decide_many", None)
+        verdicts = many(list(valid.values())) if many else [m.decide(r) for r in valid.values()]
+        answers.update(zip(valid, verdicts))
+    return {name: answers[name] for name in questions}   # keep the caller's order
+
+
 def build_app(adapters: dict[str, str], default: str = "web"):
     # Built on Starlette directly (FastAPI's base): route handlers receive the
     # request positionally, so there is no body/query heuristic across versions.
@@ -232,20 +264,6 @@ def build_app(adapters: dict[str, str], default: str = "web"):
                 return None
         return bytes(buf)
 
-    def _answer(m, state, questions):
-        answers = {}
-        for name, q in questions.items():
-            if not isinstance(q, dict):
-                answers[name] = {"error": "question must be an object"}
-                continue
-            try:
-                answers[name] = m.decide(_question_to_row(state, q))
-            except ValueError as e:
-                with _METRICS_LOCK:
-                    _METRICS["requests_errors"] += 1
-                answers[name] = {"error": str(e)}
-        return answers
-
     async def evaluate(request):
         if api_key:
             auth = request.headers.get("authorization", "")
@@ -264,18 +282,18 @@ def build_app(adapters: dict[str, str], default: str = "web"):
         if not isinstance(body, dict) or not isinstance(body.get("questions") or {}, dict):
             return _bad(400, "body must be an object with a 'questions' object")
         state = body.get("state", "")
-        state_len = len(state) if isinstance(state, str) else len(json.dumps(state, default=str))
+        n_state = state_len(state)
         questions = body.get("questions") or {}
         if len(questions) > MAX_QUESTIONS:
             return _bad(413, f"too many questions ({len(questions)} > {MAX_QUESTIONS})")
         with _METRICS_LOCK:
             _METRICS["requests_total"] += 1
-        if state_len > MAX_STATE_CHARS:
+        if n_state > MAX_STATE_CHARS:
             # Reject before routing/inference touches it — a request this large does not
             # get a domain or a verdict, it gets a clean error for every question asked.
             with _METRICS_LOCK:
                 _METRICS["requests_rejected_oversized"] += 1
-            err = {"error": f"state too large ({state_len} chars > {MAX_STATE_CHARS} limit)"}
+            err = {"error": f"state too large ({n_state} chars > {MAX_STATE_CHARS} limit)"}
             answers = {name: dict(err) for name in questions}
             _audit(None, "rejected", questions, answers, rejected_reason="oversized_state")
             return JSONResponse({"model": body.get("model") or served_name,
@@ -288,7 +306,7 @@ def build_app(adapters: dict[str, str], default: str = "web"):
         # model loading and inference are blocking: keep them off the event loop so one
         # slow request does not stall every other connection
         m = await run_in_threadpool(router.model, domain)
-        answers = await run_in_threadpool(_answer, m, state, questions)
+        answers = await run_in_threadpool(answer_questions, m, state, questions)
         _audit(domain, source, questions, answers)
         return JSONResponse({"model": body.get("model") or served_name,
                              "domain": domain, "domain_source": source, "answers": answers})
@@ -315,11 +333,21 @@ def _adapters_from_env() -> tuple[dict[str, str], str] | None:
     return None
 
 
-# `uvicorn haruspex.serve:app` entry (reads HARUSPEX_ADAPTERS / HARUSPEX_MODEL).
-app = None
-_env = _adapters_from_env()
-if _env is not None:
-    app = build_app(_env[0], default=_env[1])
+# `uvicorn haruspex.serve:app` entry (reads HARUSPEX_ADAPTERS / HARUSPEX_MODEL). Built on
+# first access, not at import: importing this module for Router/limits (the MCP server
+# does) must not pull in Starlette or load a model.
+_app = None
+
+
+def __getattr__(name):
+    global _app
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if _app is None:
+        env = _adapters_from_env()
+        if env is not None:
+            _app = build_app(env[0], default=env[1])
+    return _app
 
 
 def main():

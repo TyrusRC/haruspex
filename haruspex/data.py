@@ -23,11 +23,21 @@ import json
 from pathlib import Path
 
 
-def decision_text(row: dict) -> str:
-    """The text the model classifies: the state followed by the question.
-    `state` may be a string or a JSON-able object (serialized compactly)."""
+def state_text(row: dict) -> str:
+    """The row's state as text. Objects from a known log source (Defender, Sentinel,
+    ECS, Windows events — see evidence.py) render to the canonical evidence text; any
+    other object is serialized compactly."""
     state = row.get("state", "")
-    s = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False, default=str)
+    if isinstance(state, str):
+        return state
+    from .evidence import to_text
+    return to_text(state) or json.dumps(state, ensure_ascii=False, default=str)
+
+
+def decision_text(row: dict, state: str | None = None) -> str:
+    """The text the model classifies: the state (or an explicit window of it) followed
+    by the question."""
+    s = state_text(row) if state is None else state
     return f"{s} {row.get('question', '')}".strip()
 
 

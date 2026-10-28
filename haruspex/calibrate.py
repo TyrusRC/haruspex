@@ -18,17 +18,21 @@ a k-way one reaches 1/k, so one shared cutoff means something different per type
 type with no calibration rows abstains. `--pooled` fits one threshold instead, when the
 calibration split is too small to certify each type.
 
-Temperature scaling (Guo et al. 2017) of the boolean P(yes) is optional and fitted on
-a SEPARATE split (`--temp-data`): fitting it on the calibration split would make the
-threshold's data dependent and void the guarantee.
+Temperature scaling (Guo et al. 2017) of the per-label logits, for every decision type,
+is optional and fitted on a SEPARATE split (`--temp-data`): fitting it on the
+calibration split would make the threshold's data dependent and void the guarantee.
+
+Prediction sets (split conformal, LAC score 1 - p(true label); Sadinle et al. 2019) are
+fitted on the same calibration split: P(true label in set) >= 1 - set_alpha, marginally,
+on exchangeable data. Where the top-1 gate abstains, the set still says "it is one of
+these", which is often enough to act on.
 
 NOTE (ceilings + upgrade paths):
 - Bonferroni over 14 grid points is conservative; fixed-sequence testing on a finer
   grid buys coverage once calibration sets are larger.
-- Temperature scaling covers boolean only: classify_text returns just the top label's
-  confidence, which pins the full distribution for 2 labels but not for k > 2.
-- This is selective prediction on the top-1 label, not a conformal prediction SET.
-  Sets need per-label scores, which gliner2's classify_text path does not return.
+- One temperature shared across decision types; per-type temperatures need a larger
+  temperature split.
+- Set coverage is marginal over the calibration mix, not conditional per input.
 """
 
 from __future__ import annotations
@@ -66,32 +70,35 @@ def _fit_threshold(data, target_risk: float, delta: float) -> dict:
     return {"threshold": None, "achieved_risk": 0.0, "coverage": 0.0, "n": n}
 
 
-def _sigmoid(z: float) -> float:
-    return 1.0 / (1.0 + math.exp(-z)) if z >= 0 else math.exp(z) / (1.0 + math.exp(z))
-
-
-def _logit(p: float) -> float:
-    p = min(max(p, 1e-6), 1 - 1e-6)
-    return math.log(p / (1 - p))
-
-
 def fit_temperature(pairs) -> float:
-    """pairs: (p_yes, is_yes) for boolean rows. The T minimising NLL of sigmoid(z/T)."""
-    data = [(_logit(float(p)), bool(y)) for p, y in pairs]
+    """pairs: (member logits [{label: logit}, ...], gold label). The T minimising the NLL
+    of the gold label under the members' mean softmax(z / T)."""
+    from .scorer import ensemble_probs
+    data = [(m, g) for m, g in pairs if m and all(x is not None and g in x for x in m)]
     if not data:
         return 1.0
 
     def nll(T):
-        return -sum(math.log(max(_sigmoid(z / T) if y else 1 - _sigmoid(z / T), 1e-12))
-                    for z, y in data)
+        return -sum(math.log(max(ensemble_probs(m, T)[g], 1e-12)) for m, g in data)
 
     return min((math.exp(x / 50) for x in range(-150, 151)), key=nll)   # T in [0.05, 20]
+
+
+def _fit_set(true_probs, alpha: float) -> float | None:
+    """Split-conformal LAC threshold: q-hat over scores 1 - p(true). None when the
+    calibration rows are too few to certify 1 - alpha coverage."""
+    scores = sorted(1.0 - float(p) for p in true_probs)
+    n = len(scores)
+    k = math.ceil((n + 1) * (1 - alpha))
+    return None if n == 0 or k > n else round(scores[k - 1], 6)
 
 
 class SelectiveCalibrator:
     def __init__(self, threshold: float | None, target_risk: float,
                  achieved_risk: float = 0.0, coverage: float = 0.0, n: int = 0,
-                 delta: float = 0.1, by_type: dict | None = None, temperature: float = 1.0):
+                 delta: float = 0.1, by_type: dict | None = None, temperature: float = 1.0,
+                 temperature_scope: str = "all", set_q: float | None = None,
+                 set_alpha: float | None = None):
         # `threshold` gates every type when `by_type` is None (legacy single-threshold
         # files); None means "accept nothing".
         self.threshold = threshold
@@ -102,6 +109,36 @@ class SelectiveCalibrator:
         self.delta = delta
         self.by_type = by_type
         self.temperature = temperature
+        # Files written before full logits existed fitted T on boolean P(yes) only.
+        self.temperature_scope = temperature_scope
+        self.set_q = set_q          # pooled prediction-set threshold (by_type holds per-type)
+        self.set_alpha = set_alpha
+
+    def temperature_for(self, dtype: str) -> float:
+        return self.temperature if self.temperature_scope == "all" or dtype == "boolean" else 1.0
+
+    def prediction_set(self, probs: dict, dtype: str | None = None) -> list | None:
+        """Labels whose probability clears the conformal threshold, most likely first;
+        None when no set was fitted for this type."""
+        q = self.set_q if self.by_type is None else (self.by_type.get(dtype) or {}).get("set_q")
+        if q is None:
+            return None
+        keep = [k for k, p in probs.items() if 1.0 - p <= q + 1e-12]
+        return sorted(keep or [max(probs, key=probs.get)], key=lambda k: -probs[k])
+
+    def fit_sets(self, true_probs, alpha: float) -> None:
+        """true_probs: p(true label) per cal row, or (p, type) pairs for per-type sets."""
+        data = list(true_probs)
+        self.set_alpha = alpha
+        if data and isinstance(data[0], tuple):
+            groups: dict = {}
+            for p, t in data:
+                groups.setdefault(t, []).append(p)
+            self.by_type = self.by_type if self.by_type is not None else {}
+            for t, g in groups.items():
+                self.by_type.setdefault(t, {})["set_q"] = _fit_set(g, alpha)
+        else:
+            self.set_q = _fit_set(data, alpha)
 
     @classmethod
     def fit(cls, pairs, target_risk: float = 0.1, delta: float = 0.1) -> "SelectiveCalibrator":
@@ -119,10 +156,6 @@ class SelectiveCalibrator:
         f = _fit_threshold([(float(c), bool(ok)) for c, ok in data], target_risk, delta)
         return cls(f["threshold"], target_risk, f["achieved_risk"], f["coverage"], f["n"], delta)
 
-    def scale(self, p_yes: float) -> float:
-        """Temperature-scaled boolean P(yes)."""
-        return p_yes if self.temperature == 1.0 else _sigmoid(_logit(p_yes) / self.temperature)
-
     def apply(self, confidence: float, dtype: str | None = None) -> dict:
         """Gate a confidence for a decision type: accept or abstain."""
         if self.by_type is None:
@@ -138,7 +171,9 @@ class SelectiveCalibrator:
     def to_dict(self) -> dict:
         d = {"threshold": self.threshold, "target_risk": self.target_risk,
              "achieved_risk": self.achieved_risk, "coverage": self.coverage, "n": self.n,
-             "delta": self.delta, "temperature": self.temperature}
+             "delta": self.delta, "temperature": self.temperature,
+             "temperature_scope": self.temperature_scope, "set_q": self.set_q,
+             "set_alpha": self.set_alpha}
         if self.by_type is not None:
             d["by_type"] = self.by_type
         return d
@@ -151,7 +186,8 @@ class SelectiveCalibrator:
         d = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(d["threshold"], d["target_risk"], d.get("achieved_risk", 0.0),
                    d.get("coverage", 0.0), d.get("n", 0), d.get("delta", 0.1),
-                   d.get("by_type"), d.get("temperature", 1.0))
+                   d.get("by_type"), d.get("temperature", 1.0),
+                   d.get("temperature_scope", "boolean"), d.get("set_q"), d.get("set_alpha"))
 
 
 def _model_rows(hx, path):
@@ -174,8 +210,10 @@ def main():
     ap.add_argument("--data", required=True,
                     help="labeled JSONL (held-out calibration split, never used for tuning)")
     ap.add_argument("--temp-data", default="",
-                    help="optional labeled JSONL to fit boolean temperature on (a split "
+                    help="optional labeled JSONL to fit the logit temperature on (a split "
                          "other than --data, e.g. the dev split)")
+    ap.add_argument("--set-alpha", type=float, default=0.1,
+                    help="prediction sets miss the true label at most this often")
     ap.add_argument("--out", default="", help="write calibrator.json here (default beside model)")
     ap.add_argument("--target-risk", type=float, default=0.1)
     ap.add_argument("--delta", type=float, default=0.1,
@@ -196,19 +234,24 @@ def main():
     hx.calibrator = None   # fit on raw model output, not on a previous calibrator's
     T = 1.0
     if args.temp_data:
-        T = fit_temperature((v["probability"], g == "yes")
-                            for v, g in _model_rows(hx, args.temp_data) if v["type"] == "boolean")
-    scaler = SelectiveCalibrator(None, args.target_risk, temperature=T)
-    pairs = []
+        from .data import gold_label, load_rows
+        pairs = []
+        for row in load_rows(args.temp_data):
+            gold = gold_label(row)
+            if gold is not None and hx.decide(row).get("source") == "model":
+                pairs.append((hx.member_logits(row), gold))
+        T = fit_temperature(pairs)
+    # Apply the fitted temperature while reading the cal split; no threshold yet.
+    hx.calibrator = SelectiveCalibrator(None, args.target_risk, temperature=T)
+    pairs, true_probs = [], []
     for v, gold in _model_rows(hx, args.data):
-        conf = v["confidence"]
-        if v["type"] == "boolean":
-            p = scaler.scale(v["probability"])
-            conf = max(p, 1 - p)
         ok = _pred_label(v) == gold
-        pairs.append((conf, ok) if args.pooled else (conf, ok, v["type"]))
+        pairs.append((v["confidence"], ok) if args.pooled else (v["confidence"], ok, v["type"]))
+        p_true = (v.get("probabilities") or {}).get(gold, 0.0)
+        true_probs.append(p_true if args.pooled else (p_true, v["type"]))
     cal = SelectiveCalibrator.fit(pairs, target_risk=args.target_risk, delta=args.delta)
     cal.temperature = T
+    cal.fit_sets(true_probs, args.set_alpha)
     out = args.out or str(Path(model_id) / "calibrator.json")
     cal.save(out)
     print(f"[calibrate] {json.dumps(cal.to_dict())} -> {out}")

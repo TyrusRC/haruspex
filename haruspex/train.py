@@ -22,7 +22,7 @@ from .data import load_rows, to_input_example
 def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
           batch_size=4, grad_accum=1, lora_r=16, lora_alpha=32, logging_steps=5,
           grad_checkpoint=None, max_len=None, seed=0, sanity_gate=True,
-          gate_domain="web", save_every=0, resume=False):
+          gate_domain="web", save_every=0, resume=False, lr=1e-4):
     if mode != "lora":
         # NOTE (ceiling): a full fine-tune trains fine, but merge/save writes an
         # incompatible span-head checkpoint in gliner2 2.1 that will not reload.
@@ -59,6 +59,9 @@ def train(base: str, rows, out: str, *, mode="lora", epochs=3, max_steps=-1,
         bf16=cuda, fp16=False, eval_strategy="no", save_best=False,
         save_total_limit=save_limit, num_workers=0, pin_memory=False,
         validate_data=False, logging_steps=logging_steps, warmup_ratio=0.1,
+        # The trainer re-seeds from its own config (default 42): forward ours or
+        # --seed is a no-op. With LoRA, task_lr is the only LR in play.
+        seed=seed, task_lr=lr,
     )
     model = GLiNER2.from_pretrained(base)
     trainer = GLiNER2Trainer(model=model, config=cfg)
@@ -188,6 +191,8 @@ def main():
     ap.add_argument("--grad-checkpoint", action="store_true",
                     help="trade compute for memory (needed for long many-option states)")
     ap.add_argument("--max-len", type=int, default=0, help="cap sequence length (0 = model default)")
+    ap.add_argument("--lr", type=float, default=1e-4,
+                    help="peak LoRA learning rate (linear warmup/decay); 5e-4 collapses on some seeds, 2e-4 failed the sanity gate on 1 of 3")
     ap.add_argument("--seed", type=int, default=0, help="training seed (reproducible; retry a collapsed run with a new seed)")
     ap.add_argument("--no-sanity-gate", action="store_true",
                     help="skip the post-train discrimination probe (not recommended)")
@@ -202,13 +207,13 @@ def main():
     from .config import resolve_model
     base = resolve_model(args.base)
     rows = load_rows(args.train)
-    print(f"[train] base={base} rows={len(rows)} mode={args.mode} seed={args.seed}"
+    print(f"[train] base={base} rows={len(rows)} mode={args.mode} seed={args.seed} lr={args.lr}"
           f"{' resume' if args.resume else ''}")
     out = train(base, rows, args.out, mode=args.mode, epochs=args.epochs,
                 max_steps=args.max_steps, batch_size=args.batch, grad_accum=args.grad_accum,
                 grad_checkpoint=args.grad_checkpoint or None, max_len=args.max_len or None,
                 seed=args.seed, sanity_gate=not args.no_sanity_gate, gate_domain=args.gate_domain,
-                save_every=args.save_every, resume=args.resume)
+                save_every=args.save_every, resume=args.resume, lr=args.lr)
     print(f"[train] saved adapter -> {out}")
     print("[train] fit a calibrator next: python -m haruspex.calibrate "
           f"--model {out} --data <val.jsonl>")
