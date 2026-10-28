@@ -11,6 +11,9 @@ Haruspex reads a situation and a bounded set of options and returns a typed answ
 - **choice**: one option from a set
 - **score**: a level on an ordered rubric
 
+Every verdict carries the full probability distribution over its options and, once
+calibrated, a prediction set: the options the true answer is among, at a chosen error rate.
+
 It runs locally on CPU, CUDA or Apple MPS, and serves a simple HTTP decision API.
 
 ## How it works
@@ -26,12 +29,17 @@ non-autoregressive). It does not train a model from scratch. It adds four things
    CVE applicability and cloud scanner findings, go to rule-based resolvers. A resolver
    answers only when the evidence pins the answer down. Otherwise it defers, so a gap in
    its rules causes an abstention, not a wrong verdict.
-4. **Selective calibration.** A verdict is accepted only when its confidence clears a
+4. **One evidence format.** Defender, Sentinel, Elastic ECS and Windows Security/Sysmon
+   records are normalised into one schema before the model reads them, so a new log
+   source needs a mapper, not a new model.
+5. **Selective calibration.** A verdict is accepted only when its confidence clears a
    threshold set for its decision type. That threshold is certified on a held-out
    calibration split with Learn-then-Test (an exact binomial test, Bonferroni-corrected
    over a fixed grid). With probability at least 1−δ, the error among accepted answers
    stays within your target risk. When the calibration data can't certify any threshold,
    Haruspex abstains on that decision type.
+6. **Novelty gate.** An input unlike anything the adapter was trained on abstains and is
+   marked for escalation, instead of getting a confident guess.
 
 ## Install
 
@@ -64,9 +72,13 @@ python scripts/split_data.py data/security.jsonl --test-frac 0.2 --cal-frac 0.15
 # 2. train a LoRA adapter; choose epochs / rank / seed by eval on *_dev only
 python -m haruspex.train --train data/security_train.jsonl --out runs/sec --epochs 8 --seed 0
 
-# 3. fit the calibrator on the cal split (optionally fit boolean temperature on dev)
+# 3. fit the calibrator on the cal split (temperature on dev; threshold + prediction sets on cal)
 python -m haruspex.calibrate --model runs/sec --data data/security_cal.jsonl \
     --target-risk 0.2 --delta 0.1 --temp-data data/security_dev.jsonl
+
+# 3b. fit the novelty gate (abstain on unfamiliar inputs)
+python -m haruspex.ood --model runs/sec --train data/security_train.jsonl \
+    --cal data/security_cal.jsonl --alpha 0.01
 
 # 4. report the final number once, on test
 python -m haruspex.eval --model runs/sec --data data/security_test.jsonl
@@ -77,7 +89,21 @@ python -m haruspex.serve --model runs/sec --port 3000
 
 Training ends with a sanity gate: a fixed discrimination probe that refuses to save a
 collapsed checkpoint (one where every output is about 0.5). Retry with another `--seed`
-if it fires. On smaller GPUs, add `--batch 2 --grad-accum 4 --grad-checkpoint --max-len 192`.
+if it fires. The default learning rate is deliberately low; higher rates collapse on some
+seeds. On smaller GPUs, add `--batch 2 --grad-accum 4 --grad-checkpoint --max-len 192`.
+
+### Seed ensembles
+
+Confident mistakes are the main failure of a single adapter. Train the same recipe with a
+few `--seed` values and list them in one manifest; they share one base model, and their
+disagreement lowers confidence where a single adapter would be sure and wrong:
+
+```json
+{"base": "fastino/GLiNER2.5-Decide", "adapters": ["m0", "m1", "m2"]}
+```
+
+(`m0`…`m2` are the `final/` directories of the seed runs.) Calibrate the ensemble directory
+like any other adapter. Each verdict then also reports `agreement` across members.
 
 ## Data
 
@@ -92,6 +118,15 @@ Included packs: `security.jsonl` (offensive and defensive: scanner adjudication,
 severity, routing, CVE applicability, phishing, detection rules), plus `mobile`, `cloud`,
 `network` and `llm`.
 
+Converters for public datasets (their output is not committed):
+
+| script | source | decision |
+|---|---|---|
+| `convert_guide.py` | Microsoft GUIDE (Defender XDR incidents) | incident triage grade |
+| `convert_otrf.py` | OTRF Security-Datasets (Windows Security / Sysmon) | ATT&CK tactic of attacker events |
+| `convert_nvd.py` | NVD (after `fetch_nvd.py`) | CVSS v3 severity from a description |
+| `convert_owasp_benchmark.py` | OWASP Benchmark (GPL-2.0) | external test only, never trained on |
+
 Splits are content-hashed: a row's split depends only on the row itself, so adding data
 never moves a training row into test. Each split has one job:
 
@@ -101,6 +136,21 @@ never moves a training row into test. Each split has one job:
 | `dev` | choosing hyperparameters and temperature |
 | `cal` | fitting the calibrator, and nothing else |
 | `test` | the final reported number |
+
+## Log sources
+
+A `state` may be raw JSON from a supported source; it is normalised and rendered before
+the model reads it (`haruspex/evidence.py`):
+
+- Microsoft Defender XDR alerts (Graph security `alerts_v2`)
+- Microsoft Sentinel `SecurityAlert` rows
+- Elastic Common Schema documents
+- Windows Security and Sysmon events, flat or `evtx_dump`-style nested
+- a list of any of these, read as one event window
+
+Other JSON is passed through as-is; the novelty gate then decides whether the adapter
+should answer at all. Long states are read in overlapping windows, and a verdict stands
+only when every window agrees.
 
 ## HTTP API
 
@@ -112,8 +162,9 @@ POST /v1/evaluate        (also /v1/systemone; type "noul" is accepted as boolean
                              "criteria": {"true":..,"false":..} | {opt: desc} | [levels] } } }
 ```
 
-Each answer carries its verdict, `accept` / `abstain` (when a calibrator is loaded), and a
-`source`:
+Each answer carries its verdict, the full `probabilities`, `accept` / `abstain` and a
+`prediction_set` (when a calibrator is loaded), and a `source`. All questions in one
+request are scored as a single batch.
 
 | source | meaning |
 |---|---|
@@ -134,6 +185,18 @@ Optional settings:
 - `HARUSPEX_AUDIT_LOG` writes one JSONL line per request; the raw `state` is never logged.
 - `--ssl-keyfile` / `--ssl-certfile` serve HTTPS.
 
+## Agents (MCP)
+
+`haruspex-mcp` (`pip install -e ".[mcp]"`) is a stdio MCP server with `decide` and
+`list_domains` tools, sharing the HTTP server's routing and limits. Every result carries
+`escalate` and an `action`: when Haruspex abstains, the agent is told to hand the question
+to a stronger model or a human.
+
+```json
+{"mcpServers": {"haruspex": {"command": "/path/to/.venv/bin/haruspex-mcp",
+  "args": ["--adapters", "web=/abs/runs/sec,soc=/abs/runs/soc"]}}}
+```
+
 ## Per-domain adapters
 
 Each domain gets its own adapter on the shared base, served behind one endpoint. The
@@ -145,7 +208,8 @@ haruspex-serve --adapters web=runs/sec,mobile=runs/mobile,cloud=runs/cloud --por
 haruspex-serve --adapters web=TyrusRC/haruspex,mobile=TyrusRC/haruspex#mobile  # from the Hub
 ```
 
-`repo#subfolder` loads one adapter from a multi-domain repository.
+`repo#subfolder` loads one adapter from a multi-domain repository. A `general` adapter
+trained on every domain together is the fallback when no domain fits.
 
 ## Benchmarking
 
@@ -153,7 +217,8 @@ haruspex-serve --adapters web=TyrusRC/haruspex,mobile=TyrusRC/haruspex#mobile  #
 other model sees the same option descriptions, decodes greedily with output constrained
 to the valid labels, and can take few-shot examples drawn from the train split. The
 script reports accuracy with 95 % intervals, per-category accuracy, and an exact paired
-McNemar test.
+McNemar test. It also runs the cascade — Haruspex answers what it accepts, the LLM gets
+only the abstentions — and reports how many LLM calls that leaves.
 
 ```sh
 python scripts/bench.py --data data/security_test.jsonl --model runs/sec \
@@ -164,7 +229,8 @@ Results are recorded in [`docs/benchmark.md`](docs/benchmark.md).
 
 ## Integration guidance
 
-Use Haruspex after a tool has produced candidates, to triage and rank them. For example,
+The intended shape is a cascade: Haruspex as the fast, calibrated first pass, and a general
+LLM or a human for whatever it declines. Use Haruspex after a tool has produced candidates, to triage and rank them. For example,
 for each finding, ask "is this real and reportable?" and "how severe?". Treat a `no` or
 an abstention as "not proven yet", never as "drop it". Don't use it to gate which targets
 get tested.
@@ -174,9 +240,14 @@ get tested.
 - It decides bounded questions; open-ended judgment belongs to a general model.
 - Recalibrate on your own data before relying on the risk guarantee in a new domain.
 - Full fine-tuning is disabled until gliner2 can reload its full-mode checkpoints.
-- Prediction sets, and temperature scaling for non-boolean types, wait on gliner2
-  returning per-label scores.
-- Digital forensics / incident response is not covered yet.
+- Prediction-set coverage is marginal over the calibration mix, not guaranteed per input.
+- Ensembles run their members one after another, so latency grows with their size.
+- SOC triage and Windows event logs are covered; other DFIR artefacts (memory, disk,
+  timelines) are not yet.
+- The novelty gate compares surface text, not meaning: a familiar format with new content
+  may pass it.
+- A decision that needs facts from two distant parts of a long log at once is beyond the
+  windowed reader; escalate those.
 
 ## Contributing
 

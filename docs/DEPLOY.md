@@ -100,6 +100,16 @@ python -m haruspex.calibrate --model runs/<domain> --data data/<domain>_cal.json
 The calibrator prints a warning for each type it cannot certify; those questions will
 abstain.
 
+Fit the novelty gate in the same directory, so inputs unlike the training data abstain:
+
+```sh
+python -m haruspex.ood --model runs/<domain> --train data/<domain>_train.jsonl \
+    --cal data/<domain>_cal.jsonl --alpha 0.01
+```
+
+Abstentions from either carry `"route": "escalate"`; send those to a stronger model or a
+human, never drop them.
+
 ## Request limits
 
 These are hard limits; anything larger is rejected before inference runs:
