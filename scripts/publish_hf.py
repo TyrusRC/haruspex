@@ -29,6 +29,9 @@ def main():
     ap.add_argument("--model", required=True, help="trained model dir")
     ap.add_argument("--repo", required=True, help="HF repo id, e.g. TyrusRC/haruspex")
     ap.add_argument("--subfolder", default="", help="upload into this folder of the repo (one domain)")
+    ap.add_argument("--index", default="",
+                    help="root card only: sub=dir,... of every adapter in the repo, for its overview table")
+    ap.add_argument("--card-only", action="store_true", help="upload just the regenerated README.md")
     ap.add_argument("--private", action="store_true")
     ap.add_argument("--token", default=os.environ.get("HF_TOKEN", ""))
     args = ap.parse_args()
@@ -41,7 +44,8 @@ def main():
     if not (is_adapter or is_merged):
         sys.exit(f"error: {model_dir} is not a Haruspex model dir (no haruspex.json or config.json)")
 
-    card = write_card(model_dir, args.repo, args.subfolder)
+    index = dict(p.split("=", 1) for p in args.index.split(",") if p) if args.index else None
+    card = write_card(model_dir, args.repo, args.subfolder, index)
     print(f"[publish] wrote model card -> {card}  ({'adapter' if is_adapter else 'merged'})")
 
     from huggingface_hub import HfApi
@@ -50,6 +54,12 @@ def main():
     dest = f"{args.repo}/{args.subfolder}" if args.subfolder else args.repo
     print(f"[publish] uploading {model_dir} -> https://huggingface.co/{dest}")
     # Ship the artifact, not the training bookkeeping (logs, failed-batch dumps, configs).
+    if args.card_only:
+        path = f"{args.subfolder}/README.md" if args.subfolder else "README.md"
+        api.upload_file(path_or_fileobj=str(card), path_in_repo=path, repo_id=args.repo,
+                        repo_type="model", commit_message="Update model card")
+        print(f"[publish] card updated -> https://huggingface.co/{dest}")
+        return
     api.upload_folder(folder_path=str(model_dir), repo_id=args.repo, repo_type="model",
                       path_in_repo=args.subfolder or None,
                       commit_message=f"Update {args.subfolder or 'root'} adapter",

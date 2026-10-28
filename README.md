@@ -208,8 +208,21 @@ haruspex-serve --adapters web=runs/sec,mobile=runs/mobile,cloud=runs/cloud --por
 haruspex-serve --adapters web=TyrusRC/haruspex,mobile=TyrusRC/haruspex#mobile  # from the Hub
 ```
 
-`repo#subfolder` loads one adapter from a multi-domain repository. A `general` adapter
-trained on every domain together is the fallback when no domain fits.
+`repo#subfolder` loads one adapter from a multi-domain repository. Published adapters
+in [`TyrusRC/haruspex`](https://huggingface.co/TyrusRC/haruspex):
+
+| load as | domain |
+|---|---|
+| `TyrusRC/haruspex` | web / general security (offensive and defensive) |
+| `TyrusRC/haruspex#soc` | SOC incident triage, Windows / Sysmon events |
+| `TyrusRC/haruspex#mobile` | Android / iOS |
+| `TyrusRC/haruspex#cloud` | cloud and IaC findings |
+| `TyrusRC/haruspex#network` | internal network / Active Directory |
+| `TyrusRC/haruspex#llm` | LLM application security |
+| `TyrusRC/haruspex#general` | every domain at once; the fallback when none fits |
+
+Route each domain to its own adapter: the general adapter's calibrator is pooled over all
+domains, so its risk target holds on average, not per domain.
 
 ## Benchmarking
 
@@ -225,7 +238,8 @@ python scripts/bench.py --data data/security_test.jsonl --model runs/sec \
     --llm-url http://127.0.0.1:8088 --shots 3 --shots-from data/security_train.jsonl
 ```
 
-Results are recorded in [`docs/benchmark.md`](docs/benchmark.md).
+Results, including where the cascade helps and where it does not, are in
+[`docs/benchmark.md`](docs/benchmark.md).
 
 ## Integration guidance
 

@@ -48,7 +48,7 @@ specializes it on security decisions. It does not train a decision model from sc
   **prediction sets**, and a **novelty gate** that abstains on unfamiliar input.
 - Serves the TypeSafe `POST /v1/systemone` and native `/v1/evaluate` contracts.
 
-## Intended use (security, both sides)
+{index}## Intended use (security, both sides)
 
 - **Offensive (pentest / red-team):** is this template/probe relevant to the target?
   is this scanner hit a real finding? finding severity; verdict discipline
@@ -95,6 +95,9 @@ Fit with `python -m haruspex.calibrate` and `python -m haruspex.ood`; evaluate w
 - Calibrated on this domain's held-out split; recalibrate before relying on the
   guarantee on your own data.
 - Prediction-set coverage is marginal over the calibration mix, not per input.
+- A calibrator fitted on a mix of domains holds its risk target on average over that
+  mix, not on each domain: check each test set's accepted accuracy under Evaluation,
+  and route a domain with its own adapter to that adapter.
 
 Apache-2.0. Repo + recipe: https://github.com/TyrusRC/haruspex
 """
@@ -150,7 +153,36 @@ def _eval_blocks(model_dir: Path, repo: str):
     return mi, sec
 
 
-def build_card(model_dir: str | Path, repo: str, subfolder: str = "") -> str:
+def _index_section(repo: str, index: dict) -> str:
+    """Root-card table of every adapter in the repo, from each dir's eval*.json."""
+    rows = []
+    for sub, d in index.items():
+        for ef in sorted(Path(d).glob("eval*.json")):
+            try:
+                e = json.loads(ef.read_text())
+            except (ValueError, OSError):
+                continue
+            sel = e.get("selective") or {}
+            ans = (f"{round(sel['coverage'] * 100)} % at {sel['accepted_accuracy']}"
+                   if sel.get("coverage") is not None else "-")
+            load = f"`{repo}`" if sub in ("", "web") else f'`{repo}#{sub}`'
+            rows.append(f"| {load} | {e.get('dataset', '')} | {e.get('test_n', '')} | "
+                        f"{e.get('accuracy')} | {ans} |")
+    if not rows:
+        return ""
+    return ("## Adapters in this repo\n\nEach is a LoRA adapter on the same base, with its own "
+            "calibrator and novelty gate. Held-out test results (answers = share accepted by the "
+            "calibrator, and accuracy on those):\n\n| load as | test set | n | accuracy | answers |\n"
+            "|---|---|---|---|---|\n" + "\n".join(rows) +
+            "\n\nAgainst Llama-3.1-8B-Instruct (3-shot, constrained output) on the same test "
+            "sets: no significant difference on the security pack, where the cascade (Haruspex "
+            "first, the LLM only on abstentions) matches the 8B with one LLM call in six; on "
+            "Microsoft GUIDE incident grading Haruspex scores 0.565 against the 8B's 0.272. "
+            "Details: the repo's `docs/benchmark.md`.\n\n")
+
+
+def build_card(model_dir: str | Path, repo: str, subfolder: str = "",
+               index: dict | None = None) -> str:
     model_dir = Path(model_dir)
     base = _base_model(model_dir)
     cal_file = model_dir / "calibrator.json"
@@ -171,12 +203,14 @@ def build_card(model_dir: str | Path, repo: str, subfolder: str = "") -> str:
     serve_args = f"--adapters {subfolder}={repo}#{subfolder}" if subfolder else f"--model {repo}"
     title = f"{repo} ({subfolder})" if subfolder else repo
     return _TEMPLATE.format(repo=title, base=base, model_index=model_index,
+                            index=_index_section(repo, index) if index else "",
                             load_args=load_args, serve_args=serve_args,
                             base_url="https://huggingface.co/fastino/GLiNER2.5-Decide",
                             cal=cal, eval=eval_section)
 
 
-def write_card(model_dir: str | Path, repo: str, subfolder: str = "") -> Path:
+def write_card(model_dir: str | Path, repo: str, subfolder: str = "",
+               index: dict | None = None) -> Path:
     out = Path(model_dir) / "README.md"
-    out.write_text(build_card(model_dir, repo, subfolder), encoding="utf-8")
+    out.write_text(build_card(model_dir, repo, subfolder, index), encoding="utf-8")
     return out

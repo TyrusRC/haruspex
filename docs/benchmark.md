@@ -1,80 +1,60 @@
-# Haruspex comparison card
+# Haruspex comparison card (v0.3)
 
-> **v0.1 numbers, re-measurement pending.** Measured on a shuffle-based split that moved
-> rows between train and test whenever the dataset grew, with hyperparameters and the
-> calibrator both fit on the cal split. Treat as indicative; see the README "Measured" note.
+Haruspex adapters vs. Llama-3.1-8B-Instruct (Q4, llama.cpp, greedy, output constrained to
+the valid labels, 3 worked examples drawn from the train split) on held-out test splits.
+Each test split was run once, after model selection on dev and calibration on cal.
+Reproduce with `scripts/bench.py` (see the README).
 
-Haruspex (a ~494M specialized decision adapter) vs. baselines on the **same 91-row
-security held-out test** (`data/security_test.jsonl`, never seen in training or
-calibration). The point: show where a tiny, calibrated, specialized model wins and where
-it still trails a much larger general model.
+## Results
 
-| model | params | overall acc | p50 ms |
+| test set | n | Haruspex | Llama-3.1-8B 3-shot | paired McNemar p | cascade | LLM calls in cascade |
+|---|---|---|---|---|---|---|
+| security pack | 188 | 0.878 [0.823, 0.917] | 0.904 [0.854, 0.939] | 0.47 | 0.904 | 16 % |
+| Microsoft GUIDE incidents (3-way grade) | 1500 | **0.565** [0.540, 0.590] | 0.272 [0.250, 0.295] | 8e-54 | 0.367 | 82 % |
+
+Median latency per decision on one RTX 3060: Haruspex 34–43 ms, the 8B 170–203 ms.
+
+- **Security pack:** no significant difference between the 8B and Haruspex. The cascade
+  (Haruspex answers what its calibrator accepts, the LLM gets only the abstentions)
+  matches the 8B exactly while sending it one call in six.
+- **GUIDE:** Haruspex roughly doubles the 8B, which scores below chance (0.333) on SOC
+  incident grading. Here the cascade *hurts*: the 8B is worse than Haruspex on the cases
+  Haruspex declines, so abstentions on this task belong with a human or a much stronger
+  model.
+
+## Selective accuracy (calibrator on)
+
+| adapter | test set | answers | accuracy when answering |
 |---|---|---|---|
-| **Haruspex (ours, LoRA ep8/r16)** | ~494M + LoRA | **0.879** | 50 |
-| Llama-3.1-8B-Instruct (prompted, Q4) | ~8B | 0.703 | 75 |
-| Base GLiNER2.5-Decide (zero-shot) | ~494M | 0.604 | 29 |
+| web | security pack | 84 % | 0.931 |
+| soc | GUIDE | 18 % | 0.872 |
+| mobile / cloud / network / llm | own packs | 100 % | 0.939 / 0.871 / 0.971 / 0.985 |
+| general (pooled) | security pack | 88 % | 0.888 |
+| general (pooled) | GUIDE | 32 % | 0.706 (above its 0.2 risk target: pooled calibration holds on the mix, not per domain) |
 
-**Headline:** the specialized ~494M adapter beats a prompted 8B general model
-(0.88 vs 0.70) at ~1/16 the parameters and comparable latency, and lifts the un-tuned
-base encoder from 0.60.
+Per-category accuracy on the security pack (n per category is small; treat as a gap finder):
 
-## Per-category accuracy (gap finder)
+| category | n | Haruspex | 8B 3-shot |
+|---|---|---|---|
+| def_alert_severity | 9 | 0.67 | 0.56 |
+| def_alert_triage | 11 | 0.91 | 1.00 |
+| def_cve_urgency | 7 | 0.57 | 1.00 |
+| def_data_source | 5 | 1.00 | 1.00 |
+| def_incident_route | 8 | 0.75 | 1.00 |
+| def_phish | 7 | 0.86 | 1.00 |
+| def_rule_applicable | 5 | 1.00 | 1.00 |
+| off_chain_worthy | 10 | 0.80 | 1.00 |
+| off_cve_applicable | 15 | 0.87 | 0.93 |
+| off_scanner_adjudication | 69 | 0.96 | 0.90 |
+| off_severity | 17 | 0.76 | 0.71 |
+| off_template_relevance | 8 | 0.88 | 1.00 |
+| off_test_class | 9 | 0.89 | 1.00 |
+| off_verdict | 8 | 1.00 | 0.88 |
 
-| category | n | Haruspex | base (0-shot) | Llama-3.1-8B |
-|---|---|---|---|---|
-| def_alert_severity | 7 | 1.00 | 0.29 | 0.43 |
-| def_alert_triage | 8 | 0.75 | 0.50 | 0.50 |
-| def_cve_urgency | 6 | 0.83 | 0.33 | 0.83 |
-| def_data_source | 4 | 1.00 | 1.00 | 1.00 |
-| def_incident_route | 8 | 1.00 | 0.75 | 1.00 |
-| def_phish | 5 | 1.00 | 0.20 | 1.00 |
-| def_rule_applicable | 5 | 1.00 | 0.20 | 1.00 |
-| off_chain_worthy | 5 | 0.80 | 0.60 | 0.60 |
-| off_cve_applicable | 10 | 0.70 | 0.70 | **0.90** |
-| off_scanner_adjudication | 5 | 1.00 | 0.80 | 1.00 |
-| off_severity | 10 | 0.70 | 0.70 | 0.20 |
-| off_template_relevance | 7 | 0.86 | 0.71 | 0.71 |
-| off_test_class | 5 | 1.00 | 1.00 | 0.60 |
-| off_verdict | 6 | 1.00 | 0.67 | 0.50 |
+## Caveats
 
-**Where Haruspex leads:** severity rating, alert triage, incident routing, phishing,
-rule-applicability, verdict discipline, scanner adjudication — the judgment/consistency
-tasks specialization is for.
-
-**Residual gap:** `off_cve_applicable` (0.70 vs the 8B's 0.90) — version-range reasoning
-is knowledge-heavy and favors the larger model; add more CVE rows to close it.
-
-## Method / caveats
-
-- Same held-out split for all three models; Haruspex and the base encoder run through
-  `decide()`, the 8B through a zero-shot prompt (`llama.cpp` server, Q4, greedy) parsed
-  into the typed label.
-- Per-category n is small (4–10) — read category rows as directional, not precise.
-- The 8B is prompted (not fine-tuned on this task); a fine-tuned 8B would score higher
-  but costs ~16× the parameters.
-- Reproduce: `scripts/split_data.py ... && python -m haruspex.train --epochs 8` then the
-  benchmark harness. Numbers are a single run on an RTX 3060 (12 GB).
-
-## Real-world test — owasp-lab source adjudication
-
-Fed 12 real vulnerabilities from a Flask OWASP Top-10 lab (`jozeta/owasp-lab`) to Haruspex
-as raw **code observations** (the analyst/scanner surfaces the candidate; Haruspex adjudicates):
-
-- **Vulnerability class: 12/12 correct** — including 3 mitigated-looking traps it was *not*
-  fooled by (SSTI behind a keyword blocklist, a `..`-filtered-but-absolute-path traversal,
-  and an SSRF host blocklist).
-- **Severity: mostly right** (SQLi/SSTI/pickle/SSRF → critical; traversal/order-by → high).
-- **"Is this a real finding?"** Out of the box this missed bare code observations (it is
-  trained on "scanner flagged … confirmed" phrasing). Adding ~50 **code-observation**
-  adjudication rows (genuinely-vulnerable vs genuinely-safe code) lifted it to **10/12
-  flagged** while correctly rejecting **3/3 safe-code controls** (parameterized SQL,
-  `safe_join`, bcrypt) — i.e. no false positives on safe code.
-- **Residual:** 2 confident false negatives (blind command injection with discarded output;
-  MD5 password storage). Pushing more data past this point traded a false negative for a
-  false positive on safe code — the ~0.5B adjudication head's capacity limit on a nuanced
-  binary judgment from free-text code.
-
-**Takeaway:** Haruspex is an **adjudication layer**, strongest on class + severity. Feed it
-*verified* observations (as the verify→assess pipeline does) and it is accurate; it is not a
-from-scratch SAST scanner on raw code.
+- The security pack is this project's own data; GUIDE (Microsoft, analyst-graded) is the
+  independent one. GUIDE's ceiling with tenant-independent fields is about 0.80, since
+  about 20 % of incidents share a summary with differently graded ones.
+- One 8B model and one prompt format; larger LLMs were not run.
+- OTRF Windows-log test (35 rows, 3 tactics) is too small to report as a benchmark.
