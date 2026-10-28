@@ -36,6 +36,48 @@ class EvidenceTest(unittest.TestCase):
         txt = to_text({"EventID": 1, "CommandLine": "A" * 5000})
         self.assertLess(len(txt), 1000)
 
+    def test_cloudtrail(self):
+        ev = normalize({"eventSource": "iam.amazonaws.com", "eventName": "CreateAccessKey",
+                        "userIdentity": {"type": "IAMUser", "arn": "arn:aws:iam::1:user/bob"},
+                        "sourceIPAddress": "203.0.113.5", "errorCode": "AccessDenied",
+                        "awsRegion": "us-east-1"})
+        self.assertEqual(ev["source"], "AWS CloudTrail")
+        self.assertEqual(ev["event"]["action"], "CreateAccessKey")
+        self.assertEqual(ev["user"], "arn:aws:iam::1:user/bob")
+        self.assertEqual(ev["outcome"], "failure: AccessDenied")
+        self.assertEqual(ev["network"]["src_ip"], "203.0.113.5")
+        wrapped = normalize({"Records": [{"eventSource": "s3.amazonaws.com", "eventName": "GetObject"}]})
+        self.assertEqual(wrapped[0]["event"]["action"], "GetObject")
+
+    def test_suricata_alert(self):
+        ev = normalize({"event_type": "alert", "src_ip": "10.0.0.5", "dest_ip": "198.51.100.7",
+                        "dest_port": 443, "proto": "TCP",
+                        "alert": {"signature": "ET MALWARE beacon", "severity": 1,
+                                  "category": "A Network Trojan was detected", "action": "allowed"}})
+        self.assertEqual(ev["title"], "ET MALWARE beacon")
+        self.assertEqual(ev["kind"], "alert")
+        self.assertEqual(ev["network"]["dst_port"], "443")
+        self.assertEqual(ev["outcome"], "allowed")
+
+    def test_zeek_dotted_and_nested_ids(self):
+        flat = normalize({"ts": 1.0, "uid": "C1", "id.orig_h": "10.0.0.5", "id.resp_h": "8.8.8.8",
+                          "id.resp_p": 53, "proto": "udp", "query": "evil.example"})
+        nested = normalize({"ts": 1.0, "uid": "C1", "id": {"orig_h": "10.0.0.5", "resp_h": "8.8.8.8",
+                                                           "resp_p": 53}, "proto": "udp",
+                            "query": "evil.example"})
+        self.assertEqual(flat, nested)
+        self.assertEqual(flat["source"], "Zeek")
+        self.assertIn("evil.example", render(flat))
+
+    def test_okta(self):
+        ev = normalize({"eventType": "user.session.start", "displayMessage": "User login to Okta",
+                        "actor": {"alternateId": "bob@example.com", "type": "User"},
+                        "outcome": {"result": "FAILURE", "reason": "INVALID_CREDENTIALS"},
+                        "client": {"ipAddress": "203.0.113.9"}, "severity": "INFO"})
+        self.assertEqual(ev["user"], "bob@example.com")
+        self.assertEqual(ev["outcome"], "FAILURE: INVALID_CREDENTIALS")
+        self.assertEqual(ev["event"]["action"], "user.session.start")
+
     def test_list_of_events(self):
         txt = render(normalize([{"EventID": 1}, {"EventID": 3}]))
         self.assertTrue(txt.startswith("[1]") and "\n[2]" in txt)

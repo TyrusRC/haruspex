@@ -68,7 +68,7 @@ def decide(domain, kind, state, question, options):
         raise gr.Error("state and question are required")
     if len(state) > MAX_STATE:
         raise gr.Error(f"state is over {MAX_STATE} characters; summarise it first")
-    try:   # raw log JSON (Defender, Sentinel, ECS, Windows events) is normalised by the model
+    try:   # raw log JSON (Defender, Sentinel, ECS, Windows, CloudTrail, Suricata, Zeek, Okta) is normalised by the model
         parsed = json.loads(state)
         if isinstance(parsed, (dict, list)):
             state = parsed
@@ -107,7 +107,7 @@ with gr.Blocks(title="Haruspex") as demo:
     with gr.Row():
         domain = gr.Dropdown(list(DOMAINS), value="web", label="Domain")
         kind = gr.Dropdown(["boolean", "choice", "score"], value="boolean", label="Decision type")
-    state = gr.Textbox(lines=6, label="State (text, or raw Defender / Sentinel / ECS / Windows event JSON)")
+    state = gr.Textbox(lines=6, label="State (text, or raw Defender / Sentinel / ECS / Windows / CloudTrail / Suricata / Zeek / Okta JSON)")
     question = gr.Textbox(label="Question")
     options = gr.Textbox(lines=4, label="Options: boolean 'true: ...' / 'false: ...'; "
                                         "choice 'label: description' per line; score one level per line")

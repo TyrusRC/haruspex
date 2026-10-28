@@ -1,7 +1,7 @@
 """One evidence schema for every log source, so the model never learns a vendor format.
 
 Raw telemetry differs per product (Defender, Sentinel, Elastic ECS, Windows EVTX /
-Sysmon, ...) but a triage decision rests on the same facts: which tactic/technique,
+Sysmon, AWS CloudTrail, Suricata EVE, Zeek, Okta, ...) but a triage decision rests on the same facts: which tactic/technique,
 which entities in which role, what process/user/host/network, what automated verdicts.
 `normalize()` maps a known raw shape onto those canonical fields and `render()` turns
 them into the one compact text form the adapters are trained on. Supporting a new
@@ -165,6 +165,76 @@ def from_sentinel_alert(d: dict) -> dict:
     })
 
 
+def from_cloudtrail(d: dict) -> dict:
+    """AWS CloudTrail record (one element of `Records`)."""
+    ui = d.get("userIdentity") or {}
+    err = d.get("errorCode")
+    return _prune({
+        "source": "AWS CloudTrail", "kind": "event",
+        "title": _s(f'{d.get("eventSource", "")} {d.get("eventName", "")}'),
+        "outcome": _s(f"failure: {err}" if err else ""),
+        "event": {"action": _s(d.get("eventName")), "channel": _s(d.get("eventSource"))},
+        "user": _s(ui.get("arn") or ui.get("userName") or ui.get("principalId")),
+        "host": _s(d.get("awsRegion")),
+        "network": {"src_ip": _s(d.get("sourceIPAddress"))},
+        "entities": [{"type": "identity", "role": "actor", "value": _s(ui.get("type"))}] if ui.get("type") else [],
+        "extra": {"User agent": d.get("userAgent")} if d.get("userAgent") else {},
+    })
+
+
+def from_suricata(d: dict) -> dict:
+    """Suricata EVE JSON record (alert, dns, http, tls, flow, ...)."""
+    a = d.get("alert") or {}
+    et = d.get("event_type", "")
+    extra = {k: v for k, v in (("DNS query", _get(d, "dns.rrname") or _get(d, "dns.query.0.rrname")),
+                               ("HTTP", _get(d, "http.hostname") and
+                                f'{_get(d, "http.http_method") or ""} {_get(d, "http.hostname")}{_get(d, "http.url") or ""}'),
+                               ("TLS SNI", _get(d, "tls.sni"))) if v}
+    return _prune({
+        "source": "Suricata", "kind": "alert" if et == "alert" else _s(et),
+        "title": _s(a.get("signature")), "severity": _s(a.get("severity")),
+        "outcome": _s(a.get("action")), "tactics": _list(a.get("category")),
+        "network": {"src_ip": _s(d.get("src_ip")), "dst_ip": _s(d.get("dest_ip")),
+                    "dst_port": _s(d.get("dest_port")), "protocol": _s(d.get("app_proto") or d.get("proto")),
+                    "direction": _s(d.get("direction"))},
+        "extra": extra,
+    })
+
+
+def from_zeek(d: dict) -> dict:
+    """Zeek JSON log line (conn, dns, http, ssl, notice, ...); `id.*` dotted or nested."""
+    ids = d.get("id") if isinstance(d.get("id"), dict) else {k[3:]: v for k, v in d.items() if k.startswith("id.")}
+    extra = {k: d[f] for k, f in (("DNS query", "query"), ("HTTP host", "host"), ("URI", "uri"),
+                                  ("TLS SNI", "server_name"), ("Service", "service"),
+                                  ("Connection state", "conn_state")) if d.get(f) not in (None, "", "-")}
+    return _prune({
+        "source": "Zeek", "kind": "alert" if d.get("note") else "event",
+        "title": _s(d.get("note") or d.get("msg")),
+        "network": {"src_ip": _s(ids.get("orig_h")), "dst_ip": _s(ids.get("resp_h")),
+                    "dst_port": _s(ids.get("resp_p")), "protocol": _s(d.get("proto"))},
+        "extra": extra,
+    })
+
+
+def from_okta(d: dict) -> dict:
+    """Okta System Log event."""
+    o = d.get("outcome") or {}
+    res = o.get("result") if isinstance(o, dict) else o
+    reason = o.get("reason") if isinstance(o, dict) else None
+    actor = d.get("actor") or {}
+    return _prune({
+        "source": "Okta", "kind": "event", "title": _s(d.get("displayMessage")),
+        "severity": _s(d.get("severity")),
+        "outcome": _s(f"{res}: {reason}" if res and reason else res),
+        "event": {"action": _s(d.get("eventType"))},
+        "user": _s(actor.get("alternateId") or actor.get("displayName")),
+        "network": {"src_ip": _s(_get(d, "client.ipAddress"))},
+        "entities": [{"type": _s(t.get("type")), "role": "target",
+                      "value": _s(t.get("alternateId") or t.get("displayName"))}
+                     for t in d.get("target") or [] if isinstance(t, dict)],
+    })
+
+
 def _json_list(v):
     if isinstance(v, str):
         try:
@@ -188,12 +258,22 @@ def normalize(obj) -> dict | list | None:
         return None
     if _is_canonical(obj):
         return obj
+    if isinstance(obj.get("Records"), list):          # a CloudTrail file / S3 object
+        return normalize(obj["Records"])
     if "evidence" in obj and ("mitreTechniques" in obj or "serviceSource" in obj):
         return from_defender_alert(obj)
     if "AlertName" in obj and ("Tactics" in obj or "Entities" in obj):
         return from_sentinel_alert(obj)
     if "EventID" in obj or isinstance(_get(obj, "Event.System"), dict):
         return from_windows_event(obj)
+    if "eventSource" in obj and "eventName" in obj:
+        return from_cloudtrail(obj)
+    if "event_type" in obj and ("src_ip" in obj or "alert" in obj):
+        return from_suricata(obj)
+    if "uid" in obj and ("id.orig_h" in obj or isinstance(obj.get("id"), dict)):
+        return from_zeek(obj)
+    if "eventType" in obj and "actor" in obj:
+        return from_okta(obj)
     if isinstance(obj.get("event"), dict) or "ecs" in obj:
         return from_ecs(obj)
     return None

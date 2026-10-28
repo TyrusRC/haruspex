@@ -29,8 +29,8 @@ non-autoregressive). It does not train a model from scratch. It adds four things
    CVE applicability and cloud scanner findings, go to rule-based resolvers. A resolver
    answers only when the evidence pins the answer down. Otherwise it defers, so a gap in
    its rules causes an abstention, not a wrong verdict.
-4. **One evidence format.** Defender, Sentinel, Elastic ECS and Windows Security/Sysmon
-   records are normalised into one schema before the model reads them, so a new log
+4. **One evidence format.** Defender, Sentinel, Elastic ECS, Windows Security/Sysmon,
+   AWS CloudTrail, Suricata, Zeek and Okta records are normalised into one schema before the model reads them, so a new log
    source needs a mapper, not a new model.
 5. **Selective calibration.** A verdict is accepted only when its confidence clears a
    threshold set for its decision type. That threshold is certified on a held-out
@@ -146,7 +146,15 @@ the model reads it (`haruspex/evidence.py`):
 - Microsoft Sentinel `SecurityAlert` rows
 - Elastic Common Schema documents
 - Windows Security and Sysmon events, flat or `evtx_dump`-style nested
+- AWS CloudTrail records (a bare record or a `{"Records": [...]}` file)
+- Suricata EVE JSON (alert, dns, http, tls, flow)
+- Zeek JSON logs (conn, dns, http, ssl, notice; `id.*` dotted or nested)
+- Okta System Log events
 - a list of any of these, read as one event window
+
+The published adapters were trained on Microsoft and Windows evidence only. CloudTrail,
+Suricata, Zeek and Okta are rendered into the same schema, but expect the novelty gate
+to abstain on them more often until an adapter is trained on that telemetry.
 
 Other JSON is passed through as-is; the novelty gate then decides whether the adapter
 should answer at all. Long states are read in overlapping windows, and a verdict stands

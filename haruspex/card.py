@@ -57,7 +57,8 @@ specializes it on security decisions. It does not train a decision model from sc
 - **Defensive (SOC / blue-team):** alert and incident triage (true / benign / false
   positive), alert severity/priority, detection-rule applicability, incident routing, CVE
   applicability, ATT&CK tactic of Windows/Sysmon events. Raw Defender, Sentinel, Elastic
-  ECS and Windows event JSON is normalised before the model reads it.
+  ECS, Windows, CloudTrail, Suricata, Zeek and Okta JSON is normalised before the model
+  reads it (adapters are trained on the Microsoft/Windows sources only).
 
 It is a classifier for bounded decisions — not a chatbot, not an exploit generator.
 
