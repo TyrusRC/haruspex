@@ -4,7 +4,6 @@
 > verdicts, and it abstains when it isn't sure.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Demo](https://img.shields.io/badge/%F0%9F%A4%97-live%20demo-yellow)](https://huggingface.co/spaces/TyrusRC/haruspex-demo)
 
 Haruspex reads a situation and a bounded set of options and returns a typed answer:
 
