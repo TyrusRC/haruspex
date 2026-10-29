@@ -139,6 +139,25 @@ _DOMAIN_PROBES = {
                 "The model echoed a benign greeting with no security impact",
                 "A tool call is gated behind an explicit user confirmation"],
     },
+    # Code-level taint (the Juliet / OWASP-Benchmark adapter): a tainted source reaching a
+    # sink vs. the same shape made safe. The generic probes above are the wrong question
+    # for this adapter, so it needs its own gate (use --gate-domain code).
+    "code": {
+        "real": ["String id = request.getParameter(\"id\"); stmt.execute(\"select * from t where n='\" + id + \"'\");",
+                 "String cmd = request.getHeader(\"X\"); Runtime.getRuntime().exec(new String[]{\"sh\",\"-c\",cmd});",
+                 "String p = request.getParameter(\"f\"); new FileInputStream(new File(\"/data/\" + p));"],
+        "neg": ["String id = request.getParameter(\"id\"); PreparedStatement ps = c.prepareStatement(\"select * from t where n=?\"); ps.setString(1, id);",
+                "String v = \"alpha\"; stmt.execute(\"select * from t where n='\" + v + \"'\");",
+                "MessageDigest.getInstance(\"SHA-256\");"],
+    },
+    "dast": {
+        "real": ["SQL Injection on /api/products param id: error-based extraction via EXTRACTVALUE confirmed",
+                 "Supabase RLS disabled — patients table (full_name, phone, email) readable with anon key",
+                 "Missing rate limiting on /auth/login — 15 rapid POST requests all returned 200"],
+        "neg": ["CSP includes unsafe-inline — required by Next.js framework for hydration",
+                "Missing Cross-Origin-Embedder-Policy header on production app behind Cloudflare",
+                "Server header discloses cloudflare — standard CDN behavior, not exploitable"],
+    },
 }
 
 
@@ -196,7 +215,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="training seed (reproducible; retry a collapsed run with a new seed)")
     ap.add_argument("--no-sanity-gate", action="store_true",
                     help="skip the post-train discrimination probe (not recommended)")
-    ap.add_argument("--gate-domain", default="web", help="sanity-gate probe set: web | mobile | all")
+    ap.add_argument("--gate-domain", default="web",
+                    help="sanity-gate probe set: web | mobile | cloud | network | llm | code | all "
+                         "(match the adapter's domain; 'all' is for an all-in-one model)")
     ap.add_argument("--save-every", type=int, default=0,
                     help="save intermediate checkpoint every N steps (0 = final only). "
                          "Allows --resume if training is interrupted.")
