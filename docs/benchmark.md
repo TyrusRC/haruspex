@@ -58,3 +58,36 @@ Per-category accuracy on the security pack (n per category is small; treat as a 
   about 20 % of incidents share a summary with differently graded ones.
 - One 8B model and one prompt format; larger LLMs were not run.
 - OTRF Windows-log test (35 rows, 3 tactics) is too small to report as a benchmark.
+
+## Publishing results on the Hugging Face Hub
+
+Per the [eval-results spec](https://huggingface.co/docs/hub/eval-results), scores live in
+the model repo under `.eval_results/*.yaml` and link to a **benchmark dataset** that holds
+the eval splits and a root `eval.yaml`. `scripts/publish_eval_results.py` writes both from
+`runs/<domain>/eval.json`:
+
+```bash
+python scripts/publish_eval_results.py --runs runs \
+    --dataset-dir ~/datasets/haruspex-bench \
+    --eval-results runs/sec-v2-lr1e-4-s2/.eval_results
+```
+
+Then, after review, upload by hand (publishing a public dataset is licence-sensitive):
+
+```bash
+hf upload-large-folder TyrusRC/haruspex-bench ~/datasets/haruspex-bench --repo-type dataset
+hf upload TyrusRC/haruspex runs/sec-v2-lr1e-4-s2/.eval_results .eval_results
+```
+
+Three honest caveats about what will render:
+
+- **Leaderboard aggregation needs an allow-listed benchmark.** The dataset's `eval.yaml`
+  is validated at push, but HF only aggregates its leaderboard once the dataset is on
+  their beta allow-list — you have to ask them.
+- **`evaluation_framework` is an HF-maintained enum** (e.g. `inspect-ai`, `math-arena`);
+  the generated file uses `custom` as a placeholder, which you must replace with an
+  allow-listed id (or get one added) before the dataset validates as a benchmark.
+- **A "verified" badge needs the eval to run in HF Jobs with inspect-ai.** Our harness is
+  a plain Python one, so these are community (unverified) scores until the eval is ported.
+- **OWASP Benchmark rows (GPL) are never shipped** in the dataset; that score is reported
+  in prose against the upstream dataset only.
