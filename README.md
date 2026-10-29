@@ -41,6 +41,31 @@ non-autoregressive). It does not train a model from scratch. It adds four things
 6. **Novelty gate.** An input unlike anything the adapter was trained on abstains and is
    marked for escalation, instead of getting a confident guess.
 
+### Domain adapters
+
+Each security domain trains a separate LoRA adapter on domain-specific data:
+
+| Domain | Use | Training data |
+|---|---|---|
+| `web` | General web security decisions | 400+ labeled rows |
+| `dast` | DAST finding adjudication (real vs noise) | 96 rows from vigil scans on real targets |
+| `code` | Source-level taint analysis (Juliet/OWASP Benchmark) | CWE test suites |
+| `mobile` | MASTG mobile security | MASTG control assessments |
+| `cloud` | Cloud/IaC posture findings | Terraform, CloudFormation, Kubernetes |
+| `network` | AD/network lateral movement | BloodHound, Kerberos, relay |
+| `llm` | LLM/AI prompt injection triage | Jailbreak, tool SSRF, prompt leakage |
+| `soc` | SOC alert triage | Defender, Sentinel, Sysmon, Suricata |
+
+### Integration
+
+Haruspex serves one `/v1/evaluate` endpoint that [praetor](https://github.com/TyrusRC/praetor) and [vigil](https://github.com/TyrusRC/vigil) both call:
+
+- **Vigil** routes template-relevance ranking to `domain: "guide"` and finding adjudication to `domain: "dast"`.
+- **Praetor** routes `assess_finding` enrichment to the domain matching the vuln type (web/cloud/llm/mobile/network) and reads the probability as a second opinion alongside its deterministic verdict.
+- **MCP server** (`haruspex-mcp`) exposes `decide` and `list_domains` tools for direct agent access.
+
+Self-hosted and keyless — the agent needs only the base URL (`http://127.0.0.1:3000`).
+
 ## Install
 
 ```sh
