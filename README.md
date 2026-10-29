@@ -49,7 +49,7 @@ Each security domain trains a separate LoRA adapter on domain-specific data:
 |---|---|---|
 | `web` | General web security decisions | 400+ labeled rows |
 | `dast` | DAST finding adjudication (real vs noise) | 104 rows: SQLi, Supabase RLS, rate limiting, cache deception, CORS reflection, null-byte traversal, GraphQL introspection, debug data leak, SVG injection + noise patterns |
-| `code` | Source-level taint analysis (Juliet/OWASP Benchmark) | CWE test suites |
+| `code` | Source-level taint analysis — **not shipped**: at chance on independent code sets (OWASP, PrimeVul), see [docs/benchmark.md](docs/benchmark.md) | NIST Juliet (experimental) |
 | `mobile` | MASTG mobile security | MASTG control assessments |
 | `cloud` | Cloud/IaC posture findings | Terraform, CloudFormation, Kubernetes |
 | `network` | AD/network lateral movement | BloodHound, Kerberos, relay |

@@ -51,11 +51,39 @@ Per-category accuracy on the security pack (n per category is small; treat as a 
 | off_test_class | 9 | 0.89 | 1.00 |
 | off_verdict | 8 | 1.00 | 0.88 |
 
+## Independent datasets (never trained on)
+
+A score on a split of our own data can hide overfitting, so each adapter is also run on a
+public dataset it never saw in training. These are the honest numbers.
+
+| adapter | independent set | n | accuracy | notes |
+|---|---|---|---|---|
+| `llm` | [`deepset/prompt-injections`](https://huggingface.co/datasets/deepset/prompt-injections) | 116 | **0.67** | real signal above chance; but accepted risk ~0.33 (calibration fit in-distribution does not hold out-of-distribution) |
+| `web` (generalist) | `deepset/prompt-injections` | 116 | 0.41 | correctly abstains on 76 % — it defers rather than guess outside its domain |
+| `code` | [OWASP Benchmark](https://owasp.org/www-project-benchmark/) | 600 | **0.50** | at chance — see below |
+| `code` | PrimeVul (real C/C++) | 303 | **0.50** | at chance |
+
+**Code-level vulnerability detection does not work at this model scale.** A code adapter
+trained on NIST Juliet reaches 0.71 on a Juliet split but collapses to chance on both
+independent code sets (OWASP 0.50, PrimeVul 0.50); training longer only reduces the Juliet
+overfit (0.71 → 0.54) without moving the independent score. Llama-3.1-8B also scores ~0.53
+on OWASP, so static taint analysis from a code snippet is hard for this class of model, not
+just for Haruspex. **No code adapter is published**; the converters
+(`convert_juliet.py`, `convert_owasp_benchmark.py`, `convert_primevul.py`) remain so the
+result is reproducible and so a future, larger backend can be measured the same way.
+
+The lesson shapes what *is* shipped: an adapter earns a place only when it holds up on
+independent data (like `llm`), and the selective calibrator refuses to accept answers it
+cannot stand behind (the code adapter's calibrator set no threshold — coverage 0).
+
 ## Caveats
 
 - The security pack is this project's own data; GUIDE (Microsoft, analyst-graded) is the
   independent one. GUIDE's ceiling with tenant-independent fields is about 0.80, since
   about 20 % of incidents share a summary with differently graded ones.
+- Selective-calibration risk guarantees are in-distribution; on a shifted input the real
+  risk can exceed the target (the `llm` adapter: 0.2 target, ~0.33 on deepset). The novelty
+  gate catches inputs unlike training data, but not a same-shaped harder distribution.
 - One 8B model and one prompt format; larger LLMs were not run.
 - OTRF Windows-log test (35 rows, 3 tactics) is too small to report as a benchmark.
 

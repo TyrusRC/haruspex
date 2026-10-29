@@ -143,6 +143,11 @@ _DOMAIN_PROBES = {
     # sink vs. the same shape made safe. The generic probes above are the wrong question
     # for this adapter, so it needs its own gate (use --gate-domain code).
     "code": {
+        # a code adapter trains on "Is this code vulnerable?", not the generic finding
+        # question, so this probe set carries its own query via "q".
+        "q": {"type": "boolean", "question": "Is this code vulnerable?",
+              "criteria": {"true": "it contains an exploitable vulnerability",
+                           "false": "it is not vulnerable"}},
         "real": ["String id = request.getParameter(\"id\"); stmt.execute(\"select * from t where n='\" + id + \"'\");",
                  "String cmd = request.getHeader(\"X\"); Runtime.getRuntime().exec(new String[]{\"sh\",\"-c\",cmd});",
                  "String p = request.getParameter(\"f\"); new FileInputStream(new File(\"/data/\" + p));"],
@@ -163,9 +168,12 @@ _DOMAIN_PROBES = {
 
 def _probe_set(domain: str) -> dict:
     if domain == "all":
+        # only domains that share the generic finding question; a set with its own "q"
+        # (e.g. code) can't be probed by one shared query, so it is excluded from "all".
         real, neg = [], []
         for d in _DOMAIN_PROBES.values():
-            real += d["real"]; neg += d["neg"]
+            if "q" not in d:
+                real += d["real"]; neg += d["neg"]
         return {"real": real, "neg": neg}
     if domain not in _DOMAIN_PROBES:
         raise ValueError(f"unknown gate domain {domain!r}; known: {list(_DOMAIN_PROBES)} + 'all'")
@@ -180,10 +188,11 @@ def sanity_check(model_dir: str, device: str = "cpu", domain: str = "web", probe
     collapse-to-0.5 failure mode: REAL must score high, NOISE/SAFE low, with a clear margin."""
     from .model import Haruspex
     ps = probes or _probe_set(domain)
+    q = ps.get("q", _SANITY_Q)   # a probe set may carry its own question (e.g. code)
     m = Haruspex.load(model_dir, device=device)
 
     def p_yes(state: str) -> float:
-        v = m.decide({**_SANITY_Q, "state": state})
+        v = m.decide({**q, "state": state})
         return float(v.get("probability", 0.0) or 0.0)
 
     real = [p_yes(s) for s in ps["real"]]
