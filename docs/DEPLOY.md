@@ -58,10 +58,15 @@ someone notices.
 
 ## Observability
 
-- `GET /health` — `{"ok": bool, "domains": [...], "default": "..."}`. `ok` is only
-  `true` once the default domain's adapter has loaded — use it as a real readiness
-  probe, not just a liveness check, if your orchestrator supports the distinction (a
-  cold start can take tens of seconds to minutes depending on device and adapter count).
+- `GET /health` — `{"ok", "loaded", "domains", "default", "readiness", "warnings"}`.
+  `ok` is `true` when the configuration is sound (every served domain has an adapter and
+  a calibrator); `loaded` turns `true` once the default domain's adapter is warm (a cold
+  start can take tens of seconds to minutes). `readiness` is per-domain
+  `{spec, local, adapter, calibrated, novelty}` and `warnings` lists any domain that
+  would answer with an uncalibrated bare base model — **a server started without
+  `--model`/`--adapters` silently serves the GLiNER2.5-Decide base (no adapter, no
+  accept/abstain gate), so gate your clients on `ok == true` / `warnings == []`, not just
+  a 200.** The same warnings print to stderr at startup.
 - `GET /metrics` — plain-text counters (`haruspex_requests_total`,
   `haruspex_requests_domain_<name>`, `haruspex_requests_rejected_oversized` (state too
   long), `haruspex_requests_rejected_400` (malformed body), `haruspex_requests_rejected_413`

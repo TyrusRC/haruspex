@@ -181,7 +181,10 @@ request are scored as a single batch.
 | `cloud_rule` | the cloud resolver answered |
 | `model_declined` | abstained; route the question to an external lookup |
 
-Other endpoints are `GET /health`, `GET /v1/models` and `GET /metrics`.
+Other endpoints are `GET /health`, `GET /v1/models` and `GET /metrics`. `/health`
+reports per-domain readiness (`adapter`, `calibrated`, `novelty`) and warns when a domain
+would answer with an uncalibrated bare base model — start the server with
+`--model`/`--adapters`, never bare, and gate clients on `ok`/`warnings`.
 
 Limits: the body is capped at 512 KiB (checked before parsing), `state` at 64 K
 characters, and a request at 64 questions. Malformed input returns `400`; a request over
