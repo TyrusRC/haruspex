@@ -58,7 +58,9 @@ public dataset it never saw in training. These are the honest numbers.
 
 | adapter | independent set | n | accuracy | notes |
 |---|---|---|---|---|
-| `llm` | [`deepset/prompt-injections`](https://huggingface.co/datasets/deepset/prompt-injections) | 116 | **0.67** | real signal above chance; but accepted risk ~0.33 (calibration fit in-distribution does not hold out-of-distribution) |
+| `llm` (zero-shot transfer) | [`deepset/prompt-injections`](https://huggingface.co/datasets/deepset/prompt-injections) | 116 | 0.67 | adapter never trained on the prompt-injection task; real signal above chance, but accepted risk ~0.33 (calibration fit elsewhere does not hold here) |
+| `llm-v2` (fine-tuned on deepset-train) | `deepset/prompt-injections` | 116 | 0.966 | **overfits deepset** — see below; the same adapter is 0.59 on an independent PI source, so this is not a general capability |
+| `llm-v2` (same adapter) | [`xTRam1/safe-guard-prompt-injection`](https://huggingface.co/datasets/xTRam1/safe-guard-prompt-injection) | 2060 | **0.59** | below the 0.684 majority baseline; the 8B scores 0.925 here — fine-tuning on one PI benchmark did not transfer to another |
 | `web` (generalist) | `deepset/prompt-injections` | 116 | 0.41 | correctly abstains on 76 % — it defers rather than guess outside its domain |
 | `code` | [OWASP Benchmark](https://owasp.org/www-project-benchmark/) | 600 | **0.50** | at chance — see below |
 | `code` | PrimeVul (real C/C++) | 303 | **0.50** | at chance |
@@ -94,32 +96,46 @@ locally at 34 ms. That is the defensible "beat a model that uses more resource" 
 equal accuracy at roughly one-sixth the LLM compute, because the selective calibrator here
 is honest (accepted accuracy 0.93 at 0.84 coverage, ECE 0.035).
 
-**Out-of-distribution, the larger LLM wins and the cascade cannot help.** On the independent
-prompt-injection set, Llama-3.1-8B (3-shot) **beats** the `llm` adapter:
+**The larger LLM is the more robust detector across sources; fine-tuning the 0.5B wins only on
+the benchmark it trained on.** The `llm` adapter had never trained on prompt-injection — its
+training questions are "Is this a real, reportable security finding?" and the like — so its 0.67
+on deepset was zero-shot transfer, and the 8B beat it. Fine-tuning the 0.5B on deepset's own
+492-row train split (`llm-v2`) does raise its deepset-test score to 0.966, above the 8B. But a
+second, independent PI set from a different source shows that gain does **not** generalize:
 
-| model | params | deepset/prompt-injections | latency (p50) |
-|---|---|---|---|
-| Llama-3.1-8B-Instruct (Q4, 3-shot) | ~8 B | **0.82** | 160 ms |
-| Haruspex `llm` | ~0.5 B | 0.67 | 40 ms |
+| model | params | deepset-test (n=116) | safe-guard-PI (n=400, balanced) | latency |
+|---|---|---|---|---|
+| Llama-3.1-8B-Instruct (Q4, few-shot) | ~8 B | 0.819 | **0.925** | 165 ms |
+| Haruspex `llm` (zero-shot transfer) | ~0.5 B | 0.672 | — | 40 ms |
+| Haruspex `llm-v2` (fine-tuned on deepset-train) | ~0.5 B | **0.966** | 0.68 | 40 ms |
 
-McNemar p = 0.005 — the 8B's win is real, not noise. **Haruspex does not beat a larger LLM
-on raw accuracy out-of-distribution.** Its honest advantages here are size, local
-execution, and ~4× lower latency, not accuracy.
+Both numbers are paired against the same live 8B: on deepset-test `llm-v2` wins (McNemar
+p = 7.6e-5), on [`xTRam1/safe-guard-prompt-injection`](https://huggingface.co/datasets/xTRam1/safe-guard-prompt-injection)
+the 8B wins decisively (p = 1.3e-15). On the full 2060-row safe-guard test split `llm-v2` scores
+only **0.591 — below the 0.684 majority-class baseline** — with ECE 0.41. So `llm-v2` did not
+learn general prompt-injection detection; it learned deepset's distribution. The 8B holds 0.82–0.93
+across both sources; the fine-tuned specialist beats it on its own training distribution and
+collapses on a different one.
 
-The cascade (Haruspex first, escalate low-confidence cases to the 8B) cannot close the gap
-on this set, and the reason is the key real-world limitation: **Haruspex's confidence does
-not separate its right answers from its wrong ones under distribution shift** — mean
-confidence is 0.992 when correct and 0.993 when wrong (separation −0.001). So no abstention
-threshold identifies the cases worth escalating; escalating the bottom 9 % (conf < 0.99)
-moves blended accuracy only 0.67 → 0.68. Both signals the cascade could escalate on fail here: the novelty-gate p-value also does
-not separate correct from wrong (0.022 vs 0.022), so routing by novelty does not help
-either (and slightly hurts). The cascade works when calibration holds
-*in-distribution* — on the security pack it matched the 8B while calling it on ~16 % of
-items — but it degrades to no benefit under shift. Closing this would need a confidence
-signal that survives shift (e.g. a confidence head trained against an LLM judge, or an
-OOD detector trained on shifted data) — a real training step, not a routing tweak. Treat Haruspex as a fast local
-first-pass whose confidence is trustworthy only on in-distribution inputs; route anything
-unfamiliar to a stronger model or a human.
+**The honest conclusion.** This is the same overfitting the code adapter showed: training a 0.5B
+on one benchmark's train split can beat a 16×-larger general model *on that benchmark's test
+split*, but it is not a real-world capability — it does not transfer to another source of the
+same task. For prompt injection specifically, **the larger general LLM is the better production
+detector** because it generalizes across sources. A single-source fine-tune should never be
+reported as "beats the 8B" without a second independent set; here the second set reverses the
+result. `llm-v2` is therefore **not published** (same policy as the code adapter). A genuine
+specialist would need training across *multiple* PI sources and validation on a *held-out* source
+it never saw — a real multi-source data effort, not a single-benchmark fine-tune.
+
+The earlier cascade finding stands and is consistent: routing low-confidence cases to the 8B
+cannot rescue a task the small model has not genuinely learned, because its confidence does not
+separate right from wrong off-distribution (mean 0.992 correct vs 0.993 wrong; novelty-p 0.022 vs
+0.022). The cascade remains the right tool only where calibration genuinely holds — in-distribution
+security triage, where it matches the 8B while calling it on ~16 % of items.
+
+`runs/llm-v2` is reproducible from `scripts/convert_deepset_pi.py` (pointed at each split) plus
+`haruspex.train`; the two eval sets are `deepset/prompt-injections` and
+`xTRam1/safe-guard-prompt-injection`, neither overlapping the training text.
 
 ## Caveats
 
