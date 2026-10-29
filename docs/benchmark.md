@@ -76,6 +76,30 @@ The lesson shapes what *is* shipped: an adapter earns a place only when it holds
 independent data (like `llm`), and the selective calibrator refuses to accept answers it
 cannot stand behind (the code adapter's calibrator set no threshold — coverage 0).
 
+### Head-to-head vs a larger LLM on independent data
+
+On the independent prompt-injection set, Llama-3.1-8B (3-shot) **beats** the `llm` adapter:
+
+| model | params | deepset/prompt-injections | latency (p50) |
+|---|---|---|---|
+| Llama-3.1-8B-Instruct (Q4, 3-shot) | ~8 B | **0.82** | 160 ms |
+| Haruspex `llm` | ~0.5 B | 0.67 | 40 ms |
+
+McNemar p = 0.005 — the 8B's win is real, not noise. **Haruspex does not beat a larger LLM
+on raw accuracy out-of-distribution.** Its honest advantages here are size, local
+execution, and ~4× lower latency, not accuracy.
+
+The cascade (Haruspex first, escalate low-confidence cases to the 8B) cannot close the gap
+on this set, and the reason is the key real-world limitation: **Haruspex's confidence does
+not separate its right answers from its wrong ones under distribution shift** — mean
+confidence is 0.992 when correct and 0.993 when wrong (separation −0.001). So no abstention
+threshold identifies the cases worth escalating; escalating the bottom 9 % (conf < 0.99)
+moves blended accuracy only 0.67 → 0.68. The cascade works when calibration holds
+*in-distribution* — on the security pack it matched the 8B while calling it on ~16 % of
+items — but it degrades to no benefit under shift. Treat Haruspex as a fast local
+first-pass whose confidence is trustworthy only on in-distribution inputs; route anything
+unfamiliar to a stronger model or a human.
+
 ## Caveats
 
 - The security pack is this project's own data; GUIDE (Microsoft, analyst-graded) is the
