@@ -76,9 +76,26 @@ The lesson shapes what *is* shipped: an adapter earns a place only when it holds
 independent data (like `llm`), and the selective calibrator refuses to accept answers it
 cannot stand behind (the code adapter's calibrator set no threshold — coverage 0).
 
-### Head-to-head vs a larger LLM on independent data
+### Head-to-head vs a larger LLM
 
-On the independent prompt-injection set, Llama-3.1-8B (3-shot) **beats** the `llm` adapter:
+**In-distribution (security triage), the cascade matches the 8B at ~6× less LLM compute.**
+On the 188-row security test set:
+
+| approach | accuracy | LLM calls | latency (p50) |
+|---|---|---|---|
+| Haruspex `web` alone | 0.878 | 0 | 34 ms |
+| Llama-3.1-8B-Instruct (Q4, 3-shot) | 0.904 | 188/188 | 166 ms |
+| **Haruspex → 8B cascade** | **0.904** | **30/188 (16 %)** | 34 ms (local) / 166 ms (escalated) |
+
+Haruspex alone is statistically tied with the 8B (McNemar p = 0.47). The cascade — Haruspex
+first, escalate only the calibrated-abstention cases — reaches the **8B's exact accuracy**
+(p = 1.0 vs the 8B) while sending **16 %** of items to the LLM. The other 84 % are decided
+locally at 34 ms. That is the defensible "beat a model that uses more resource" result:
+equal accuracy at roughly one-sixth the LLM compute, because the selective calibrator here
+is honest (accepted accuracy 0.93 at 0.84 coverage, ECE 0.035).
+
+**Out-of-distribution, the larger LLM wins and the cascade cannot help.** On the independent
+prompt-injection set, Llama-3.1-8B (3-shot) **beats** the `llm` adapter:
 
 | model | params | deepset/prompt-injections | latency (p50) |
 |---|---|---|---|

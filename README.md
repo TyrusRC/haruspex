@@ -274,7 +274,12 @@ python scripts/bench.py --data data/security_test.jsonl --model runs/sec \
     --llm-url http://127.0.0.1:8088 --shots 3 --shots-from data/security_train.jsonl
 ```
 
-Results, including where the cascade helps and where it does not, are in
+Headline result (in-distribution security triage, 188 rows): the **Haruspex→8B cascade
+reaches Llama-3.1-8B's accuracy (0.904, statistically identical) while calling the LLM on
+only 16 % of items** — the same result at ~6× less LLM compute, 84 % decided locally at
+34 ms. Out-of-distribution (independent prompt-injection) the 8B wins outright (0.82 vs
+0.67) and the cascade does not help, because confidence stops separating right from wrong
+under shift. Full results, both wins and losses, are in
 [`docs/benchmark.md`](docs/benchmark.md).
 
 ## Integration guidance
