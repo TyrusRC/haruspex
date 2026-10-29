@@ -111,9 +111,13 @@ on this set, and the reason is the key real-world limitation: **Haruspex's confi
 not separate its right answers from its wrong ones under distribution shift** — mean
 confidence is 0.992 when correct and 0.993 when wrong (separation −0.001). So no abstention
 threshold identifies the cases worth escalating; escalating the bottom 9 % (conf < 0.99)
-moves blended accuracy only 0.67 → 0.68. The cascade works when calibration holds
+moves blended accuracy only 0.67 → 0.68. Both signals the cascade could escalate on fail here: the novelty-gate p-value also does
+not separate correct from wrong (0.022 vs 0.022), so routing by novelty does not help
+either (and slightly hurts). The cascade works when calibration holds
 *in-distribution* — on the security pack it matched the 8B while calling it on ~16 % of
-items — but it degrades to no benefit under shift. Treat Haruspex as a fast local
+items — but it degrades to no benefit under shift. Closing this would need a confidence
+signal that survives shift (e.g. a confidence head trained against an LLM judge, or an
+OOD detector trained on shifted data) — a real training step, not a routing tweak. Treat Haruspex as a fast local
 first-pass whose confidence is trustworthy only on in-distribution inputs; route anything
 unfamiliar to a stronger model or a human.
 
