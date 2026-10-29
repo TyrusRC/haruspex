@@ -4,9 +4,11 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from haruspex.calibrate import SelectiveCalibrator
-from haruspex.serve import Router, _parse_adapters, _question_to_row
+from haruspex.serve import (Router, _parse_adapters, _question_to_row,
+                            readiness_warnings, spec_readiness)
 
 
 class QuestionMappingTest(unittest.TestCase):
@@ -84,6 +86,53 @@ class RouterTest(unittest.TestCase):
         # mobile text but no mobile adapter registered -> stays default (web)
         r = Router({"web": "a"}, default="web")
         self.assertEqual(r.route(None, "android APK debuggable strings.xml"), ("web", "default"))
+
+
+class ReadinessTest(unittest.TestCase):
+    def _adapter(self, **files):
+        d = tempfile.mkdtemp()
+        for name in files:
+            (Path(d) / name).write_text("{}")
+        return d
+
+    def test_default_base_id_warns(self):
+        # the stale-server case: `serve` with no --model resolves to the known base id.
+        from haruspex.config import DEFAULT_MODEL
+        self.assertIs(spec_readiness(DEFAULT_MODEL)["adapter"], False)
+        self.assertIn("BARE BASE MODEL", readiness_warnings({"web": DEFAULT_MODEL})[0])
+
+    def test_unknown_remote_repo_is_unknown_not_warned(self):
+        # some other repo id we can't probe: unknown, not a false alarm
+        self.assertEqual(spec_readiness("someorg/some-adapter")["adapter"], None)
+        self.assertEqual(readiness_warnings({"web": "someorg/some-adapter"}), [])
+
+    def test_bare_base_model_warns(self):
+        # a local dir with no haruspex.json IS knowably a bare base -> warn
+        d = self._adapter()
+        self.assertIs(spec_readiness(d)["adapter"], False)
+        warns = readiness_warnings({"web": d})
+        self.assertEqual(len(warns), 1)
+        self.assertIn("BARE BASE MODEL", warns[0])
+
+    def test_adapter_without_calibrator_warns(self):
+        d = self._adapter(**{"haruspex.json": 1})
+        r = spec_readiness(d)
+        self.assertTrue(r["adapter"])
+        self.assertFalse(r["calibrated"])
+        self.assertIn("NO calibrator", readiness_warnings({"web": d})[0])
+
+    def test_fully_calibrated_adapter_is_silent(self):
+        d = self._adapter(**{"haruspex.json": 1, "calibrator.json": 1, "ood.json": 1})
+        self.assertEqual(readiness_warnings({"web": d}), [])
+
+    def test_subfolder_spec(self):
+        d = tempfile.mkdtemp()
+        sub = Path(d) / "mobile"
+        sub.mkdir()
+        (sub / "haruspex.json").write_text("{}")
+        (sub / "calibrator.json").write_text("{}")
+        r = spec_readiness(f"{d}#mobile")
+        self.assertTrue(r["adapter"] and r["calibrated"])
 
 
 class CardTest(unittest.TestCase):

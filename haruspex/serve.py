@@ -103,6 +103,44 @@ def _parse_adapters(spec: str) -> dict[str, str]:
     return out
 
 
+def spec_readiness(spec: str) -> dict:
+    """What a served spec will actually be, read cheaply off disk BEFORE the ~2 GB
+    load. `adapter` is False when the spec is a bare base model (no fine-tuning);
+    `calibrated`/`novelty` say whether the selective-calibration and novelty-gate
+    files are present. A local dir is inspected; a remote repo id can't be checked
+    without downloading, so its flags are None (unknown)."""
+    from pathlib import Path
+    from .config import DEFAULT_MODEL
+    path, _, sub = spec.partition("#")
+    if path == DEFAULT_MODEL and not sub:       # the known base: definitely no adapter/calibration
+        return {"spec": spec, "local": False, "adapter": False,
+                "calibrated": False, "novelty": False}
+    root = Path(path) / sub if sub else Path(path)
+    if not root.exists():                       # some other remote repo id (or a typo) — can't probe
+        return {"spec": spec, "local": False, "adapter": None,
+                "calibrated": None, "novelty": None}
+    return {"spec": spec, "local": True,
+            "adapter": (root / "haruspex.json").exists(),
+            "calibrated": (root / "calibrator.json").exists(),
+            "novelty": (root / "ood.json").exists()}
+
+
+def readiness_warnings(adapters: dict[str, str]) -> list[str]:
+    """One line per served domain whose model is degraded: a bare base model (no
+    adapter) or an adapter with no calibrator. These serve answers with no accept/
+    abstain gate — the silent failure that makes a client trust an uncalibrated base."""
+    warn = []
+    for dom, spec in adapters.items():
+        r = spec_readiness(spec)
+        if r["adapter"] is False:
+            warn.append(f"domain '{dom}' -> {spec}: BARE BASE MODEL (no adapter, no calibration, "
+                        f"no novelty gate); it will answer but every verdict is uncalibrated")
+        elif r["calibrated"] is False:
+            warn.append(f"domain '{dom}' -> {spec}: adapter present but NO calibrator.json; "
+                        f"verdicts have no accept/abstain gate (run haruspex.calibrate)")
+    return warn
+
+
 class Router:
     """Holds one Haruspex instance per domain behind one endpoint.
 
@@ -241,8 +279,12 @@ def build_app(adapters: dict[str, str], default: str = "web"):
             pass  # audit logging is best-effort; never fail a request over it
 
     async def health(request):
-        return JSONResponse({"ok": bool(router._cache), "domains": list(router.adapters),
-                             "default": router.default})
+        ready = {dom: spec_readiness(spec) for dom, spec in router.adapters.items()}
+        warnings = readiness_warnings(router.adapters)
+        return JSONResponse({"ok": not warnings,   # configuration is sound (not "warm")
+                             "loaded": bool(router._cache),
+                             "domains": list(router.adapters), "default": router.default,
+                             "readiness": ready, "warnings": warnings})
 
     async def models(request):
         return JSONResponse({"object": "list",
@@ -374,6 +416,12 @@ def main():
         adapters = _parse_adapters(args.adapters)
     else:
         adapters = {"web": resolve_model(args.model)}
+    # Loudly flag a degraded serve (bare base model, or an adapter with no calibrator)
+    # BEFORE binding the port, so a keyless local engine can't quietly hand a client
+    # uncalibrated base-model verdicts. /healthz carries the same signal for a probe.
+    import sys
+    for line in readiness_warnings(adapters):
+        print(f"[haruspex] WARNING: {line}", file=sys.stderr, flush=True)
     tls = {}
     if args.ssl_keyfile or args.ssl_certfile:
         if not (args.ssl_keyfile and args.ssl_certfile):
