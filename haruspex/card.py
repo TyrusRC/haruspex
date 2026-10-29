@@ -180,6 +180,10 @@ def _index_section(repo: str, index: dict) -> str:
             "sets: no significant difference on the security pack, where the cascade (Haruspex "
             "first, the LLM only on abstentions) matches the 8B with one LLM call in six; on "
             "Microsoft GUIDE incident grading Haruspex scores 0.565 against the 8B's 0.272. "
+            "Out-of-distribution the larger LLM is the more robust detector: on independent "
+            "prompt-injection sets it holds 0.82–0.93 across two sources, and a 0.5B fine-tuned "
+            "on one of them overfits that benchmark rather than learning the task, so no "
+            "prompt-injection specialist is shipped. "
             "Details: the repo's `docs/benchmark.md`.\n\n")
 
 
