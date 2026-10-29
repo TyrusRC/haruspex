@@ -1,4 +1,4 @@
-"""Split / filter logic of scripts/convert_nvd.py and scripts/convert_owasp_benchmark.py."""
+"""Split / filter logic of scripts/convert_nvd.py, convert_owasp_benchmark.py and convert_juliet.py."""
 
 import json
 import sys
@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import convert_juliet as juliet  # noqa: E402
 import convert_nvd as nvd  # noqa: E402
 import convert_owasp_benchmark as owasp  # noqa: E402
 
@@ -111,6 +112,65 @@ class OwaspTest(unittest.TestCase):
             self.assertIn("inside the repo", str(cm.exception))
         finally:
             sys.argv = argv
+
+
+_JULIET = """package testcases.CWE89_SQL_Injection.s01;
+public class CWE89_SQL_Injection__x_01 extends AbstractTestCase
+{
+    private boolean badPrivate = true;
+    public void bad() throws Throwable
+    {
+        String data = readParam(); /* FLAW: tainted */
+        badSink(data);
+    }
+    private void badSink(String data) throws Throwable
+    {
+        IO.writeLine("<br>bad(): data = " + data);
+        stmt.execute("select * from t where n='" + data + "'");
+    }
+    private void goodG2B() throws Throwable
+    {
+        String data = "foo"; // FIX: hardcoded
+        if (data.equals("{")) { IO.writeLine("Benign, fixed string"); }
+        prepared.setString(1, data);
+    }
+    public void good() throws Throwable { goodG2B(); }
+}
+"""
+
+
+class JulietTest(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "CWE89_SQL_Injection__x_01.java"
+        self.path.write_text(_JULIET, encoding="utf-8")
+        import random
+        self.rows = juliet.convert_file(self.path, "sqli", 89, random.Random(0))
+
+    def test_one_bad_one_good_with_the_owasp_question(self):
+        self.assertEqual([r["target"] for r in self.rows], [True, False])
+        self.assertTrue(all(r["question"] == "Is this code vulnerable to SQL injection (CWE-89)?"
+                            for r in self.rows))
+
+    def test_follows_same_file_helpers_and_keeps_fields(self):
+        bad = self.rows[0]["state"]
+        self.assertIn("stmt.execute", bad)              # reached through badSink
+        self.assertIn("Private = true", bad)            # class field kept
+        self.assertNotIn("prepared.setString", bad)     # the good method is not pulled in
+
+    def test_no_label_leaks_from_names_comments_or_constants(self):
+        for r in self.rows:
+            self.assertIsNone(juliet._LEAK.search(r["state"]), r["state"])
+            self.assertNotIn('"foo"', r["state"])
+            self.assertIn("handle(", r["state"])
+        # a quoted method name renders the same in both classes
+        self.assertIn('"<br>handle(): data = "', self.rows[0]["state"])
+
+    def test_braces_inside_literals_do_not_end_a_method(self):
+        self.assertIn("prepared.setString", self.rows[1]["state"])
+
+    def test_variants_share_a_split(self):
+        self.assertEqual(juliet.variant_of("CWE89_SQL_Injection__x_01"),
+                         juliet.variant_of("CWE89_SQL_Injection__x_14"))
 
 
 if __name__ == "__main__":
